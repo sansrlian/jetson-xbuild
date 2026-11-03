@@ -1,0 +1,60 @@
+{
+    "HOST_GDB_PATH": "/usr/bin/gdb-multiarch",
+    "TARGET_LOCAL_SYSROOT": "${env:ARM64_SYSROOT}",
+    "TARGET_IP": "192.168.100.10",
+    "TARGET_GDB_PORT": "2345",
+    "TARGET_USER": "ubuntu",
+    "TARGET_PASSWORD": "",
+    "TARGET_ROS2_WS": "/home/ubuntu/ros2_ws",
+
+    "NODE_PACKAGE_NAME": "node_package_name",
+    "NODE_EXECUTABLE_NAME": "node_executable_name",
+    "LAUNCH_PACKAGE_NAME": "launch_package_name",
+    "LAUNCH_FILE_NAME": "your_launch_file_launch_py",
+
+    "cmake.cmakePath": "/usr/bin/cmake",
+    "cmake.buildBeforeRun": false,
+    "cmake.environment": {},
+    "terminal.integrated.profiles.linux": {
+        "SSH to Target": {
+            "path": "bash",
+            "args": ["-c", "sshpass -p ${config:TARGET_PASSWORD} ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new ${config:TARGET_USER}@${config:TARGET_IP}"],
+            "icon": "remote"
+        }
+    },
+
+    "VsCodeTaskButtons.tasks": [
+        {
+            "label": "$(rocket) Deploy",
+            "task": "ROS2: Deploy to Target",
+            "color": "warning",
+            "tooltip": "Deploy built binaries to the target device's ROS2 workspace"
+        },
+        {
+            "label": "$(notebook-delete-cell) Clean All",
+            "task": "ROS2: Clean All",
+            "color": "error",
+            "tooltip": "Clean build, install, and log directories on host"
+        },
+        {
+            "label": "$(run-above) Run LaunchFile",
+            "task": "ROS2: Launch Package LaunchFile",
+            "tooltip": "Launch the specified launch file from the specified package on the target device. Please ensure LAUNCH_PACKAGE_NAME and LAUNCH_FILE_NAME are configured correctly in settings.json"
+        },
+        {
+            "label": "$(run) Run ExecutableFile",
+            "task": "ROS2: Run Package Executable",
+            "tooltip": "Run the specified executable from the specified package on the target device. Please ensure NODE_PACKAGE_NAME and NODE_EXECUTABLE_NAME are configured correctly in settings.json"
+        },
+        {
+            "label": "$(cloud-download) Install Deps",
+            "task": "ROS2: Install Deps on Target (rosdep)",
+            "tooltip": "Install runtime dependencies on the target board via rosdep (over SSH), using the deployed install/ workspace"
+        },
+        {
+            "label": "$(terminal) SSH to Target",
+            "task": "ROS2: SSH to Target",
+            "tooltip": "SSH to target device"
+        }
+    ]
+}

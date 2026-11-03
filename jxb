@@ -1,0 +1,392 @@
+#!/usr/bin/env python3
+"""jxb - Jetson Orin cross-dev CLI (host side).
+
+Builds the xbuild image and the sysroot of a profile, runs a long-lived dev container with workspaces mounted
+at their host paths (so compile_commands.json, debug info and clangd work on host and in the container alike),
+cross-builds ROS 2 workspaces and talks to boards over SSH (keys only).
+
+  jxb image build                     build the xbuild image of the profile
+  jxb sysroot build [--add PKG ...]   build the profile's sysroot from the board's apt repos (no emulation)
+  jxb up [-w DIR ...] | down          create/remove the dev container (workspaces mounted read-write)
+  jxb shell | exec -- CMD ...         shell / command in the container (current directory kept if mounted)
+  jxb build [colcon args]             cross-colcon-build in the current workspace
+  jxb test [--board NAME]             cross-build the jxb test suite, check it, optionally run it on a board
+  jxb board list | check NAME         inventory; compare a board's packages with the sysroot
+  jxb deploy NAME [--ws DIR]          rsync install-<profile>/ to the board
+  jxb run NAME -- CMD ...             run CMD on the board with ROS and the deployed install sourced
+
+Global options: --profile NAME (default from jxb.toml or the only profile), --dry-run.
+Local config (gitignored): jxb.toml (defaults), boards.toml (inventory, see boards.example.toml).
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent
+sys.path.insert(0, str(REPO / "toolchain"))
+from jxb_profile import load_profile  # noqa: E402
+
+DRY_RUN = False
+
+
+def info(msg: str) -> None:
+    print(f"\033[36m[jxb]\033[0m {msg}", flush=True)
+
+
+def fail(msg: str, code: int = 1) -> None:
+    print(f"\033[31m[jxb] {msg}\033[0m", file=sys.stderr, flush=True)
+    sys.exit(code)
+
+
+def sh(cmd: list[str], check: bool = True, **kw) -> subprocess.CompletedProcess:
+    if DRY_RUN:
+        print("+ " + shlex.join(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    res = subprocess.run(cmd, **kw)
+    if check and res.returncode != 0:
+        fail(f"command failed ({res.returncode}): {shlex.join(cmd[:6])}{' ...' if len(cmd) > 6 else ''}",
+             res.returncode)
+    return res
+
+
+def load_toml(path: Path) -> dict:
+    return tomllib.loads(path.read_text()) if path.exists() else {}
+
+
+# ------------------------------------------------------------------------------------------ profile
+class Profile:
+    def __init__(self, name: str | None):
+        local = load_toml(REPO / "jxb.toml")
+        names = sorted(p.stem for p in (REPO / "profiles").glob("*.toml"))
+        name = name or os.environ.get("JXB_PROFILE") or local.get("profile") or (names[0] if len(names) == 1 else None)
+        if not name:
+            fail(f"choose a profile with --profile ({', '.join(names)})")
+        path = REPO / "profiles" / f"{name}.toml"
+        if not path.exists():
+            fail(f"unknown profile {name} ({', '.join(names)})")
+        self.name, self.path, self.data, self.local = name, path, load_profile(path), local
+        self.image = self.data["image"]["tag"]
+        self.sysroot = (REPO / self.data["sysroot"]["dir"]).resolve()
+        self.container = f"jxb-{name}"
+        self.cuda = self.data["image"]["cuda_version"]
+        self.cuda_target = self.data["sysroot"].get("cuda_target", "sbsa-linux")
+        self.distro = self.data["board"]["ros_distro"]
+
+
+def docker_state(name: str) -> str:
+    res = subprocess.run(["docker", "inspect", "-f", "{{.State.Status}}", name], capture_output=True, text=True)
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def container_mounts(name: str) -> list[Path]:
+    res = subprocess.run(["docker", "inspect", "-f", "{{range .Mounts}}{{.Destination}}\n{{end}}", name],
+                         capture_output=True, text=True)
+    return [Path(l) for l in res.stdout.splitlines() if l.strip()]
+
+
+# ------------------------------------------------------------------------------------- image/sysroot
+def cmd_image(p: Profile, a) -> None:
+    i = p.data["image"]
+    sh(["docker", "build", "-f", str(REPO / i["dockerfile"]), "-t", p.image,
+        "--build-arg", f"UBUNTU={i.get('ubuntu', '24.04')}",
+        "--build-arg", f"ROS_APT_URL={i.get('ros_apt_url', 'http://packages.ros.org/ros2/ubuntu')}",
+        "--build-arg", f"ROS_APT_KEY_URL={i.get('ros_apt_key_url', 'https://raw.githubusercontent.com/ros/rosdistro/master/ros.key')}",
+        "--build-arg", f"ROS_TOOLS_APT_URL={i.get('ros_tools_apt_url', '')}",
+        "--build-arg", f"ROS_DISTRO={i['ros_distro']}", "--build-arg", f"CUDA_DASH={i['cuda_dash']}",
+        "--build-arg", f"CUDA_PKG_VERSION={i['cuda_pkg_version']}", "--build-arg", f"CUDA_TARGET={p.cuda_target}",
+        "--build-arg", f"USER_UID={os.getuid()}", "--build-arg", f"USER_GID={os.getgid()}", str(REPO)])
+
+
+def cmd_sysroot(p: Profile, a) -> None:
+    if a.action == "info":
+        meta = p.sysroot / ".jxb"
+        if not meta.exists():
+            fail(f"no sysroot at {p.sysroot}; run: jxb sysroot build")
+        print((meta / "info.json").read_text())
+        return
+    if a.action == "rosdeps":
+        if not a.workspace:
+            fail("usage: jxb sysroot rosdeps -w WORKSPACE")
+        ws = Path(a.workspace).resolve()
+        set_name = f"ws-{p.name}-{ws.name}"
+        sets = REPO / "sysroot/sets"
+        sh(["docker", "run", "--rm", "--network", "host", "-v", f"{REPO}:/opt/jxb:ro", "-v", f"{sets}:{sets}",
+            "-v", f"{ws}:{ws}:ro", "-e", f"ROS_DISTRO={p.distro}",
+            "-e", f"JXB_UBUNTU_CODENAME={p.data['sysroot'].get('codename', 'noble')}",
+            "-e", f"JXB_ROSDEP_FALLBACK_CODENAME={p.data['sysroot'].get('rosdep_fallback_codename', '')}", p.image,
+            "python3", "/opt/jxb/toolchain/bin/jxb-rosdeps", str(ws), str(sets / f"{set_name}.txt")])
+        info(f"add \"{set_name}\" to [sysroot] extra_sets in jxb.toml, then: jxb sysroot build")
+        return
+    cache = REPO / "sysroots/.cache" / p.name
+    cmd = ["docker", "run", "--rm", "--network", "host",
+           "-v", f"{REPO}:/opt/jxb:ro", "-v", f"{p.sysroot.parent}:{p.sysroot.parent}",
+           "-e", "JXB_HOME=/opt/jxb", p.image,
+           "python3", "/opt/jxb/sysroot/build_sysroot.py", "--profile", f"/opt/jxb/profiles/{p.name}.toml",
+           "--out", str(p.sysroot), "--cache", str(cache), "--deb-cache", str(REPO / "sysroots/.cache/debs")]
+    extra_sets = []
+    for name in p.local.get("sysroot", {}).get("extra_sets", []):
+        name = name.replace("{profile}", p.name)
+        if (REPO / "sysroot/sets" / f"{name}.txt").exists():
+            extra_sets.append(name)
+        else:
+            info(f"skipping extra set {name} (not found; create it with: jxb sysroot rosdeps -w <workspace>)")
+    if extra_sets:
+        cmd += ["--extra-sets", *extra_sets]
+    if a.add:
+        cmd += ["--add", *a.add]
+    if a.no_update:
+        cmd += ["--no-update"]
+    p.sysroot.parent.mkdir(parents=True, exist_ok=True)
+    sh(cmd)
+    # The build swaps the sysroot directory; a running container still sees the old one.
+    if docker_state(p.container):
+        label = subprocess.run(["docker", "inspect", "-f", '{{index .Config.Labels "jxb.workspaces"}}', p.container],
+                               capture_output=True, text=True).stdout.strip()
+        info(f"recreating {p.container} for the new sysroot")
+        cmd_up(p, argparse.Namespace(workspace=[w for w in label.split(":") if w], recreate=True))
+
+
+# ----------------------------------------------------------------------------------------- container
+def cmd_up(p: Profile, a) -> None:
+    if not (p.sysroot / ".jxb/profile.json").exists():
+        fail(f"sysroot missing: {p.sysroot} (run: jxb sysroot build)")
+    workspaces = [Path(w).resolve() for w in (a.workspace or p.local.get("workspaces", []))]
+    state = docker_state(p.container)
+    if state and not a.recreate:
+        missing = [w for w in workspaces if w not in container_mounts(p.container)]
+        if missing:
+            fail(f"container exists without {', '.join(map(str, missing))}; use: jxb up --recreate -w ...")
+        if state != "running":
+            sh(["docker", "start", p.container], stdout=subprocess.DEVNULL)
+        info(f"container {p.container} running")
+        return
+    if state:
+        sh(["docker", "rm", "-f", p.container], stdout=subprocess.DEVNULL)
+    target = p.sysroot / f"usr/local/cuda-{p.cuda}/targets/{p.cuda_target}"
+    host_cuda = f"/usr/local/cuda-{p.cuda}/targets"
+    cmd = ["docker", "run", "-d", "--name", p.container, "--hostname", p.container, "--init",
+           "--network", "host",
+           "-v", f"{REPO}:/opt/jxb:ro", "-v", f"{REPO}:{REPO}",
+           "-v", f"{p.sysroot}:{p.sysroot}:ro",
+           "-v", f"{target}:{host_cuda}/{p.cuda_target}:ro", "-v", f"{target}:{host_cuda}/aarch64-linux:ro",
+           "-v", f"jxb-ccache-{p.name}:/home/dev/.ccache",
+           "-e", f"ARM64_SYSROOT={p.sysroot}", "-e", "JXB_HOME=/opt/jxb",
+           "--label", f"jxb.profile={p.name}", "--label", f"jxb.workspaces={':'.join(map(str, workspaces))}"]
+    for bp in p.data.get("container", {}).get("board_paths", []):
+        if (p.sysroot / bp.lstrip("/")).exists():
+            cmd += ["-v", f"{p.sysroot / bp.lstrip('/')}:{bp}:ro"]
+    for w in workspaces:
+        if not w.is_dir():
+            fail(f"workspace not found: {w}")
+        cmd += ["-v", f"{w}:{w}"]
+    sh(cmd + [p.image], stdout=subprocess.DEVNULL)
+    sh(["docker", "exec", "-u", "root", p.container, "chown", "dev:dev", "/home/dev/.ccache"])
+    info(f"container {p.container} up; workspaces: {', '.join(map(str, workspaces)) or '(none)'}")
+
+
+def ensure_up(p: Profile) -> None:
+    if docker_state(p.container) != "running":
+        cmd_up(p, argparse.Namespace(workspace=None, recreate=False))
+
+
+def container_cwd(p: Profile) -> str:
+    cwd = Path.cwd().resolve()
+    for m in container_mounts(p.container):
+        if m != Path("/opt/jxb") and (cwd == m or m in cwd.parents):
+            return str(cwd)
+    return "/home/dev"
+
+
+def in_container(p: Profile, command: str, interactive: bool = False, cwd: str | None = None) -> int:
+    ensure_up(p)
+    flags = ["-it"] if interactive and sys.stdin.isatty() else (["-t"] if sys.stdout.isatty() else [])
+    cmd = ["docker", "exec", *flags, "-w", cwd or container_cwd(p), p.container, "bash", "-lc", command]
+    return sh(cmd, check=False).returncode
+
+
+def cmd_down(p: Profile, a) -> None:
+    if docker_state(p.container):
+        sh(["docker", "rm", "-f", p.container], stdout=subprocess.DEVNULL)
+    info(f"container {p.container} removed (ccache volume kept)")
+
+
+def cmd_shell(p: Profile, a) -> None:
+    sys.exit(in_container(p, "exec bash -l", interactive=True))
+
+
+def cmd_exec(p: Profile, a) -> None:
+    if not a.cmd:
+        fail("usage: jxb exec -- CMD ...")
+    sys.exit(in_container(p, shlex.join(a.cmd), interactive=True))
+
+
+def cmd_build(p: Profile, a) -> None:
+    if container_cwd(p) == "/home/dev":
+        fail(f"{Path.cwd()} is not mounted in {p.container}; run: jxb up --recreate -w <workspace>")
+    sys.exit(in_container(p, shlex.join(["cross-colcon-build", *a.args])))
+
+
+def cmd_test(p: Profile, a) -> None:
+    out = REPO / ".work/tests" / p.name
+    rc = in_container(p, shlex.join(["/opt/jxb/tests/run.sh", str(out)]), cwd=str(REPO))
+    if rc != 0:
+        sys.exit(rc)
+    if a.board:
+        board = Board(a.board, p)
+        dest = f"{board.base}/tests"
+        info(f"copying tests to {board.name}:{dest}")
+        board.ssh(f"mkdir -p {shlex.quote(dest)}")
+        board.rsync(f"{out}/stage/", dest)
+        sys.exit(board.ssh(f"ROS_DISTRO={p.distro} bash {shlex.quote(dest)}/run_on_board.sh", tty=False, check=False))
+
+
+# --------------------------------------------------------------------------------------------- boards
+class Board:
+    def __init__(self, name: str, p: Profile):
+        inv = load_toml(REPO / "boards.toml")
+        if not inv:
+            fail("no boards.toml (copy boards.example.toml)")
+        if name not in inv.get("boards", {}):
+            fail(f"unknown board {name}; known: {', '.join(inv.get('boards', {}))}")
+        cfg = {**inv.get("defaults", {}), **inv["boards"][name]}
+        self.name, self.cfg, self.p = name, cfg, p
+        self.host, self.user = cfg["host"], cfg.get("user", "nvidia")
+        self.base = cfg.get("deploy_dir", f"/home/{self.user}/jxb/{p.name}")
+        self.target = f"{self.user}@{self.host}"
+        self.ssh_opts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
+                         "-p", str(cfg.get("ssh_port", 22))]
+
+    def ssh(self, command: str, tty: bool = False, check: bool = True, capture: bool = False) -> int | str:
+        cmd = ["ssh", *self.ssh_opts, *(["-t"] if tty else []), self.target, command]
+        res = sh(cmd, check=False, capture_output=capture, text=capture or None)
+        if res.returncode == 255:
+            fail(f"ssh to {self.target} failed. Key login needed once: ssh-copy-id {self.target}")
+        if check and res.returncode != 0:
+            fail(f"remote command failed ({res.returncode}) on {self.name}")
+        return res.stdout if capture else res.returncode
+
+    def rsync(self, src: str, dest: str, delete: bool = True) -> None:
+        e = shlex.join(["ssh", *self.ssh_opts])
+        sh(["rsync", "-az", *(["--delete"] if delete else []), "-e", e, src, f"{self.target}:{dest}"])
+
+
+def cmd_board(p: Profile, a) -> None:
+    if a.action == "list":
+        inv = load_toml(REPO / "boards.toml")
+        for name, cfg in inv.get("boards", {}).items():
+            print(f"{name:20} {cfg.get('host', '?'):18} {cfg.get('product', '')}")
+        return
+    board = Board(a.name, p)
+    lock = p.sysroot / ".jxb/packages.lock"
+    keys = ("nvidia-jetpack", "nvidia-l4t-core", "cuda-cudart-13-2", "libcudnn9-cuda-13", "libnvinfer10",
+            "libnvvpi4", "libopencv", f"ros-{p.distro}-rclcpp", f"ros-{p.distro}-cv-bridge")
+    out = board.ssh("cat /etc/nv_tegra_release; echo ---; dpkg-query -W -f='${Package}=${Version}\\n' "
+                    + " ".join(keys) + " 2>/dev/null; echo ---; ls -d /opt/onnxruntime* 2>/dev/null; true",
+                    capture=True)
+    release, pkgs, extras = (out.split("---\n") + ["", ""])[:3]
+    print(f"{board.name} ({board.target}): {release.strip()}")
+    ours = dict(l.split("=", 1) for l in lock.read_text().splitlines()) if lock.exists() else {}
+    mism = 0
+    for line in pkgs.split():
+        name, ver = line.split("=", 1)
+        sv = ours.get(name, "-")
+        flag = "ok " if sv == ver else ("   " if sv == "-" else "DIFF")
+        mism += flag == "DIFF"
+        print(f"  {flag} {name:28} board {ver:36} sysroot {sv}")
+    print(f"  onnxruntime on board: {extras.strip() or 'missing'}")
+    if mism:
+        fail(f"{mism} package(s) differ between {board.name} and the sysroot")
+
+
+def runtime_paths(p: Profile) -> list[str]:
+    """Board-absolute dirs from the sysroot that deployments ship (profile [deploy] runtime), e.g. jxb's ORT build."""
+    return [r for r in p.data.get("deploy", {}).get("runtime", []) if (p.sysroot / r.lstrip("/")).is_dir()]
+
+
+def cmd_deploy(p: Profile, a) -> None:
+    board = Board(a.name, p)
+    ws = Path(a.ws or Path.cwd()).resolve()
+    src = ws / f"install-{p.name}"
+    if not src.is_dir():
+        fail(f"{src} not found; build first (jxb build)")
+    dest = f"{board.base}/{ws.name}/install"
+    board.ssh(f"mkdir -p {shlex.quote(dest)}")
+    info(f"deploy {src} -> {board.name}:{dest}")
+    board.rsync(f"{src}/", dest)
+    # Runtime extras go next to the deployment, never into the board's own /opt (shared boards stay untouched).
+    for r in runtime_paths(p):
+        rdest = f"{board.base}/runtime{r}"
+        board.ssh(f"mkdir -p {shlex.quote(rdest)}")
+        info(f"deploy runtime {r} -> {board.name}:{rdest}")
+        board.rsync(f"{p.sysroot / r.lstrip('/')}/", rdest)
+
+
+def cmd_run(p: Profile, a) -> None:
+    board = Board(a.name, p)
+    ws = Path(a.ws or Path.cwd()).resolve()
+    setup = f"{board.base}/{ws.name}/install/setup.bash"
+    libs = ":".join(f"{board.base}/runtime{r}/lib" for r in runtime_paths(p))
+    script = (f"source /opt/ros/{p.distro}/setup.bash && "
+              f"if [ -f {setup} ]; then source {setup}; fi && "
+              f"export LD_LIBRARY_PATH={libs + ':' if libs else ''}$LD_LIBRARY_PATH && " + shlex.join(a.cmd))
+    sys.exit(board.ssh(f"bash -lc {shlex.quote(script)}", tty=sys.stdout.isatty(), check=False))
+
+
+# ----------------------------------------------------------------------------------------------- main
+def main() -> None:
+    global DRY_RUN
+    ap = argparse.ArgumentParser(prog="jxb", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--profile")
+    ap.add_argument("--dry-run", action="store_true")
+    sub = ap.add_subparsers(dest="command", required=True)
+    s = sub.add_parser("image"); s.add_argument("action", choices=["build"]); s.set_defaults(fn=cmd_image)
+    s = sub.add_parser("sysroot"); s.add_argument("action", choices=["build", "info", "rosdeps"])
+    s.add_argument("--add", nargs="*", default=[]); s.add_argument("--no-update", action="store_true")
+    s.add_argument("-w", "--workspace")
+    s.set_defaults(fn=cmd_sysroot)
+    s = sub.add_parser("up"); s.add_argument("-w", "--workspace", action="append")
+    s.add_argument("--recreate", action="store_true"); s.set_defaults(fn=cmd_up)
+    sub.add_parser("down").set_defaults(fn=cmd_down)
+    sub.add_parser("shell").set_defaults(fn=cmd_shell)
+    s = sub.add_parser("exec"); s.add_argument("cmd", nargs=argparse.REMAINDER); s.set_defaults(fn=cmd_exec)
+    s = sub.add_parser("build"); s.add_argument("args", nargs=argparse.REMAINDER); s.set_defaults(fn=cmd_build)
+    s = sub.add_parser("test"); s.add_argument("--board"); s.set_defaults(fn=cmd_test)
+    s = sub.add_parser("board"); s.add_argument("action", choices=["list", "check"]); s.add_argument("name", nargs="?")
+    s.set_defaults(fn=cmd_board)
+    s = sub.add_parser("deploy"); s.add_argument("name"); s.add_argument("--ws"); s.set_defaults(fn=cmd_deploy)
+    s = sub.add_parser("run"); s.add_argument("name"); s.add_argument("--ws")
+    s.set_defaults(fn=cmd_run, cmd=[])   # the command after "--" is split off before parsing
+    # build/exec/run pass everything after the subcommand (and the board name) through untouched; argparse
+    # would otherwise try to interpret colcon or remote options.
+    argv, passthrough = sys.argv[1:], None
+    for i, tok in enumerate(argv):
+        if tok in ("build", "exec", "run"):
+            keep = i + (2 if tok == "run" else 1)
+            argv, passthrough = argv[:keep], argv[keep:]
+            while tok == "run" and passthrough[:1] == ["--ws"] and len(passthrough) > 1:
+                argv, passthrough = argv + passthrough[:2], passthrough[2:]   # jxb's own option
+            break
+        if not tok.startswith("-") and argv[i - 1:i] != ["--profile"]:
+            break
+    a = ap.parse_args(argv)
+    if passthrough is not None:
+        if passthrough[:1] == ["--"]:
+            passthrough = passthrough[1:]
+        setattr(a, "args" if a.command == "build" else "cmd", passthrough)
+    DRY_RUN = a.dry_run
+    if a.command == "board" and a.action != "list" and not a.name:
+        fail("usage: jxb board check NAME")
+    if shutil.which("docker") is None and a.command not in ("board", "deploy", "run"):
+        fail("docker not found")
+    a.fn(Profile(a.profile), a)
+
+
+if __name__ == "__main__":
+    main()

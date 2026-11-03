@@ -1,0 +1,19 @@
+# Board inventory for jxb. Copy to boards.toml (gitignored) and adjust.
+# SSH uses keys only (no passwords in files). Once per board: ssh-copy-id <user>@<host>
+
+[defaults]
+user = "nvidia"
+ssh_port = 22
+gdb_port = 3000
+# Where `jxb deploy` / `jxb test --board` put files (nothing outside this directory is touched):
+# deploy_dir = "/home/nvidia/jxb/<profile>"
+
+[boards.nano-lab]
+host = "192.168.178.83"
+product = "Orin Nano Super 8GB, JetPack 7.2.1"
+# profile = "jp721-kilted"
+
+# [boards.agx-01]
+# host = "192.168.178.90"
+# product = "Orin AGX 64GB"
+# gdb_port = 3001

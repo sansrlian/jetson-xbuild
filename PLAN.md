@@ -1,0 +1,263 @@
+# Plan: Orin cross-dev / deploy / trace ecosystem and JetsonPlanner
+
+Created 2026-11-02. Living document: tick boxes and add dates as work progresses.
+Supersedes the "Open TODOs" in `HANDOFF.md` (that file stays as history).
+
+**Goal:** a DevOps ecosystem for a fleet of Jetson Orins (Nano first, AGX too), inspired by the Renesas RZ/V2H RDK
+`xbuild` environment:
+
+1. **xbuild (product 1):** a Docker image that mounts the ROS 2 workspace and, on a strong x86 machine,
+   cross-compiles and links everything for the Orin, including CUDA/TensorRT code, without mirroring from boards.
+   It then deploys, debugs and traces on many Orins at once and can switch between ROS 2 distros
+   (Kilted, Lyrical, ...).
+2. **Golden image:** the boards stay on **stock JetPack** (no custom Ubuntu rootfs). The pipeline produces one
+   provisioning bundle on top of it (our apt repo with cross-built `.deb`s, container images, agent, tools, config),
+   and optionally a cloned flash image of a provisioned board for massflash. Every Orin runs exactly the same
+   JetPack + bundle.
+3. **JetsonPlanner (product 2, later):** a native GUI app (no .NET), inspired by ArduPilot Mission Planner.
+   It flashes Orins, shows live telemetry, and analyzes traces and logs for many boards. It is later merged
+   with xbuild into one system.
+
+---
+
+## 1. Current state (verified 2026-11-02)
+
+| Item | State |
+|---|---|
+| This repo | Scaffold from a Cursor session (2026-10-26): launcher, Dockerfiles `kilted`/`lyrical`, Orin CMake toolchains, `board` CLI, VS Code tasks, docs. **Nothing built or tested; no commits.** |
+| Renesas reference | `/home/samuela/Projekte/setup_rdk_docker.sh`; image `ghcr.io/renesas-rdk/rzv2h_ubuntu_xbuild:multiarch` (14.5 GB, Ubuntu 24.04, ROS Jazzy, sysroot `/opt/arm64_sysroot` 4.4 GB baked in); extracted evidence in `/home/samuela/Projekte/rea/.cache/rdk-re/`; toolchain repo is open source (`renesas-rdk/ubuntu_xbuild_toolchains`) |
+| SAM dev image | `sam-dev.cs.hm.edu:5023/sam-dev/ros2:latest`: **amd64, Ubuntu 26.04, ROS 2 Lyrical (apt), CUDA 13.3**, ONNX Runtime, CV-CUDA, Pylon, acados, depthai, mavros, foxglove. A desktop dev image, not an Orin image |
+| Sysroots | none captured yet (`sysroots/` empty) |
+| Orins | **one Orin Nano with JetPack 7.2.1** (stays on stock JetPack). JP 7.2.1 = Jetson Linux 39.2.1, **Ubuntu 24.04**, kernel 6.8, CUDA 13.2.x, cuDNN 9.20, TensorRT 10.16.2, VPI 4.1.3, DeepStream 9.1; Orin Nano flashes in Super Mode by default (NVIDIA download page; exact CUDA patch level to confirm on the board) |
+| Workstation | 20 cores, 15 GB RAM, 828 GB free disk. RAM is tight for large parallel C++/CUDA builds |
+
+### Problems with today's workflow
+- **P1 — board mirroring:** sysroots are rsync'd from live Nanos. That is not reproducible, drifts per board,
+  and needs a prepared board before anything can be built.
+- **P2 — CUDA under emulation:** building CUDA/TensorRT code inside the QEMU arm64 chroot is slow, and nvcc or
+  linking often fails. Today the workaround is building on the Nano and linking in xbuild.
+- **P3 — distro/ABI mismatch:** the SAM stack is Lyrical on Ubuntu 26.04 with CUDA 13.3. The board is Ubuntu
+  24.04 with CUDA 13.2. Lyrical apt binaries target 26.04, so **Lyrical cannot run natively from apt on stock
+  JetPack 7.2.1.** Natively on 24.04 are Jazzy (also Isaac ROS's distro) and Kilted. See D2/D3.
+- **P5 — CUDA minor version:** code must be built against the board's CUDA 13.2 (not 13.3 from the SAM image),
+  and TensorRT engines must be built with TensorRT 10.16 on the board.
+- **P4 — no fleet view:** no inventory-wide deploy, health, trace collection or flashing.
+
+---
+
+## 2. Target architecture
+
+```
+x86 build host(s)                                           Orin fleet (Nano / AGX)
+┌──────────────────────────────────────────────┐            ┌─────────────────────────┐
+│ xbuild image (per ROS distro)                │            │ stock JetPack 7.2.1     │
+│  ├─ cross GCC aarch64 + nvcc 13.2 (x86 host, │  deploy    │  + provisioning bundle: │
+│  │   aarch64 target: cuda-cross-aarch64)     │──rsync────▶│  our .debs, containers  │
+│  ├─ sysroot = built from apt, not mirrored   │  OTA/flash │  CUDA/TRT/cuDNN/VPI     │
+│  │   (apt resolve+extract: Ubuntu ports, L4T │            │  ROS 2 + SAM stack      │
+│  │    repo + ROS repo) → versioned artifact  │            │  orin-agent (daemon)    │
+│  ├─ QEMU only for apt/postinst/rosdep        │◀─traces────│  nsys/ncu/perf/LTTng/   │
+│  ├─ cross-colcon-build, ccache/sccache       │  telemetry │  trace-cmd/tegrastats   │
+│  ├─ fleet CLI (board …) ─────────────────────┼──gRPC/SSH─▶│  gdbserver              │
+│  └─ bundle builder (apt repo + images)       │            └─────────────────────────┘
+└──────────────────────────────────────────────┘
+                 ▲ same agent API
+        JetsonPlanner (native GUI): flash, telemetry, trace analytics, multi-board
+```
+
+Design rules:
+- **The sysroot and the board come from the same package lock.** One manifest
+  (`{L4T release, Ubuntu release, ROS distro, package versions}`) produces the sysroot (for linking) and pins the
+  versions the provisioning bundle installs on stock JetPack. This removes ABI drift (P1, P3).
+- **No compiling under emulation.** CUDA code uses x86 nvcc with the aarch64 cross target. QEMU only runs package
+  maintainer scripts. A native arm64 builder (cloud or Orin AGX as a build node) is a fallback only.
+- **One target-side agent (`orin-agent`)** with a stable API (health, telemetry, deploy, run, trace start/stop/
+  fetch, flash state). The xbuild CLI and JetsonPlanner are both clients. That makes the later merge cheap.
+- **Every combination is a profile:** `profiles/<name>.yaml` = board class × L4T × Ubuntu × ROS distro. Switching
+  distros = switching profile (host image + sysroot + image recipe).
+
+---
+
+## 3. Workstreams
+
+### W1. Reference analysis (Renesas + others)
+Renesas: mostly done (see HANDOFF). Still open: start the image, run one real cross-build in it, and record
+what the RDK does well (one-command setup, baked sysroot, VS Code integration) and badly (sshpass, 14.5 GB
+image, single board).
+
+Other environments to study, **from public docs, open-source code and observable behaviour**:
+
+| Reference | Why | Source |
+|---|---|---|
+| NVIDIA SDK Manager, JetPack cross-compile container, `l4t_initrd_flash.sh` / massflash, NVIDIA OTA | official flash/OTA/cross path we must interoperate with | Linux_for_Tegra BSP scripts (readable shell/Python), docs |
+| OE4T `meta-tegra` + `meta-ros` (Yocto) | reproducible Orin images from source; how they package CUDA/L4T | open source |
+| Isaac ROS dev containers (`run_dev.sh`), Isaac ROS buildfarm | NVIDIA's own ROS/CUDA container layout | open source |
+| NXP i.MX (Yocto SDK), TI Processor SDK, Toradex Torizon, Foundries.io, Mender/RAUC/SWUpdate, balena | cross SDK, OTA, fleet-management patterns | docs, mostly open source |
+| QGroundControl (Qt/C++), Mission Planner (C#) | GUI concepts for JetsonPlanner | open source (Apache-2.0/GPLv3; GPL-3.0) |
+
+Scope: the whole product is for **private use only**. Commercial tools we own or can use legitimately may also
+be reverse engineered (REA + Ghidra are set up) to understand and re-implement the features we need, e.g.
+protocols, file formats, flash/OTA flows and trace formats. No circumvention of licence checks or copy protection.
+Because nothing is distributed, GPL code (Mission Planner) and NVIDIA binaries may be used freely internally.
+Revisit this if the product is ever shared.
+
+### W2. Reproducible sysroot (solves P1)
+- Build the sysroot with a private arm64 apt (resolve + extract, no emulation; `sysroot/build_sysroot.py`) from
+  Ubuntu 24.04 ports + the NVIDIA L4T r39.2 apt repo
+  (`repo.download.nvidia.com/jetson/...`, the same repo stock JetPack uses) + ROS apt repo + Isaac ROS apt repo,
+  from a locked package list. Only `-dev` packages and their libraries; no live board needed. Because the board
+  installs from the same repos, sysroot and stock JetPack match.
+- Version it as an artifact (tarball or OCI layer, e.g. `sysroot:jp<ver>-<ubuntu>-<distro>-<date>`), so the xbuild
+  image pulls it like the RDK bakes `/opt/arm64_sysroot`.
+- Keep `jetson_sysroot_sync.sh` only as a diff tool: compare a live board against the locked sysroot to detect
+  drift.
+
+### W3. CUDA/TensorRT cross-compilation (solves P2)
+- Install the CUDA **13.2** cross packages for the Jetson/L4T target (Orin `sm_87` stays on the L4T path, unlike
+  Thor, which is SBSA; confirm the exact package name for JP 7.2) on the x86 image. nvcc runs natively on x86 and
+  emits `sm_87` code. Link against the sysroot's `libcudart`, TensorRT, cuDNN.
+- Extend `orin_*_cross.cmake`: `CMAKE_CUDA_COMPILER`, `CMAKE_CUDA_ARCHITECTURES=87`, `CUDAToolkit_ROOT`,
+  `-ccbin aarch64-linux-gnu-g++`, TensorRT/cuDNN find hints.
+- Proof packages: a CUDA kernel package, a TensorRT engine runner, and the real `object_detection_package`.
+  Success = binaries built in xbuild run unchanged on the Nano.
+- Build speed: ccache/sccache, `--parallel-workers` tuned to the 15 GB RAM, optional remote build host.
+
+### W4. Golden image = stock JetPack + provisioning bundle
+- Base: stock JetPack 7.2.1, flashed unchanged (`l4t_initrd_flash.sh` / SDK Manager flow). No custom rootfs.
+- Bundle, produced by the xbuild pipeline and versioned together with the sysroot manifest:
+  - our apt repo with cross-built `.deb`s (ROS packages, SAM nodes, `orin-agent`), installed natively;
+  - container images (`nvidia-container-toolkit`, `--runtime nvidia`) for anything needing another distro (D2);
+  - tracing tools, `nvpmodel`/clock profiles, systemd units, SSH keys, `boards` config.
+- Apply with one idempotent `provision` command over the agent/SSH (one board or the whole fleet).
+- Optional: clone a provisioned board (`l4t_backup_restore` / initrd-flash backup) into a massflash image.
+- Updates: new bundle version = apt upgrade + image pull, no reflash.
+
+### W5. Fleet deploy / debug
+- `orin-agent` (small C++ daemon, shares protobuf/gRPC definitions with JetsonPlanner) with gRPC over mTLS;
+  SSH keys only, no sshpass. Cross-built and shipped as a `.deb` by xbuild itself.
+- `board` CLI talks to the agent: `list`, `deploy [--all|--group]`, `run`, `logs`, `gdbserver` (unique port per
+  board), `reboot`, `flash-status`, `exec`.
+- Per-board `ROS_DOMAIN_ID`, parallel deploy with a per-board result table.
+- VS Code: launch configs generated per board (gdb-multiarch, sysroot-aware `solib-search-path`).
+
+### W6. Tracing and analytics
+- Target: `nsys` CLI, `ncu`, `perf`, `trace-cmd`/ftrace, LTTng + `ros2_tracing`, `tegrastats`/jtop, `bpftrace`
+  (kernel config permitting).
+- One command: start a synchronized trace on N boards, collect into `traces/<session>/<board>/`, with board and
+  image metadata.
+- Analysis: Perfetto (trace processor + UI) as the common format, Nsight GUI on the host for `.nsys-rep`;
+  scripted reports (latency per ROS callback, GPU utilisation, RAM per process). This also gives the on-device
+  numbers the inference plan in `quantization-aware-model/PLAN.md` needs.
+
+### W7. JetsonPlanner (after W1–W6 have a stable agent API)
+- Native GUI in **C++** (decided), no .NET. Framework: **Qt 6 / QML** (like QGroundControl: charts, serial/USB,
+  maps, mature tooling). QGroundControl and Mission Planner serve as references.
+- Features: board discovery and inventory, flashing (wraps W4 incl. recovery-mode USB), live telemetry dashboard
+  (tegrastats, ROS topics, temperatures, power), log and trace browser (W6), deploy buttons (W5), multi-board view.
+- Integration: JetsonPlanner uses the same agent API and profile/manifest files. Later the xbuild container becomes
+  its build backend.
+- Bonus: embeds the RDP view from W8 per board.
+
+### W8. Remote GUI besides SSH (bonus, after the core works)
+Purpose: debugging GUI tools that must run on the board. Constraint: the **Orin Nano has no hardware video
+encoder (NVENC)**, so pixel streaming costs CPU, and a desktop session costs several hundred MB of RAM.
+
+| Priority | Use | Tool |
+|---|---|---|
+| 1. Single remote windows | Debugging tools on the board (Nsight, rqt, GUI test apps) | Waypipe (Wayland) or X11 forwarding over SSH; check which session JetPack 7.2.1 runs |
+| 2. Full desktop, on demand | Rare cases needing the whole desktop | RDP (GNOME Remote Desktop / xrdp) over an SSH tunnel, client Remmina/FreeRDP; fallback VNC |
+
+- Not needed: a remote data/visualization layer (Foxglove etc.).
+- `board gui <name> -- <app>` opens a single window; `board gui <name> --desktop` starts RDP on demand.
+- Boards boot to `multi-user.target`; the desktop runs only when requested.
+- JetsonPlanner may later embed the RDP view (FreeRDP library).
+
+---
+
+## 4. Phases and to-dos
+
+### Phase 0: Decisions and inventory (½ day)
+- [x] Board OS: stock JetPack, no custom rootfs (2026-11-02)
+- [x] JetsonPlanner language: C++ (2026-11-02)
+- [x] Inventory: one Orin Nano on JetPack 7.2.1 (2026-11-02)
+- [x] Nano details from the old setup (2026-11-02): Orin Nano Super 8 GB, JetPack 7.2.1, ROS 2 Jazzy native,
+      `nvidia@192.168.178.83`, workspace `/home/nvidia/ros2_ws` (in `boards.toml`, gitignored)
+- [x] SSH key login to the Nano (done by the user) and `jxb board check nano-lab` (2026-11-03, findings F35)
+- [x] D2: Lyrical on the board via container first, then source build; both must stay supported (2026-11-02)
+- [x] Remote GUI besides SSH is a bonus (W8) (2026-11-02)
+- [ ] Commit the current scaffold as the baseline; create the remote repo
+
+### Phase 1: Minimal working xbuild (Jazzy/Kilted on 24.04, one Nano)
+Implementation notes and every pitfall found on the way: [docs/findings.md](docs/findings.md).
+- [x] New implementation replaces the scaffold (moved to `attic/`): `jxb` CLI, profiles, image, sysroot builder,
+      toolchain, test suite (2026-11-02)
+- [x] xbuild image `jxb:<profile>`: Ubuntu 24.04, aarch64 GCC 13, x86 nvcc 13.2.86 (= board), host ROS 2 (2026-11-02)
+- [x] W2: sysroot from the board's apt repos without emulation (apt resolve + extract + postinst emulation):
+      ~950 packages, 16 GB, 8 GB download once, ~1 min rebuild from cache (2026-11-02)
+- [x] W3: CUDA 13.2 cross toolchain + CMake (sm_87, RDC, cuBLAS, NVTX), TensorRT 10.16, ONNX Runtime 1.31 (CPU),
+      ONNX 1.17 from source, CV-CUDA 0.16, ROS 2 interfaces + CUDA node: 12/12 tests incl. qemu runs (2026-11-02)
+- [x] Profiles `jp721-jazzy` and `jp721-kilted` (inheritance); SAM workspace: 24/24 buildable packages with
+      Kilted, 22/24 with Jazzy (SAM uses Kilted APIs) (2026-11-02)
+- [x] ONNX Runtime 1.31 with CUDA + TensorRT EP for sm_87 from source (`extras/onnxruntime`, lean flavor), in all
+      sysroots; needed a CUDA 13.2 CCCL fixup (findings F22) (2026-11-02)
+- [x] acados 0.5.2 cross build + host-side code generation; `acados_model_package` and `trajectory_planner_package`
+      cross-build (2026-11-02)
+- [ ] Pylon SDK (Basler) as extra for `pylon_camera_package`
+- [x] `jxb-elfcheck` also checks GLIBC_/GLIBCXX_ symbol versions against the sysroot (2026-11-02)
+- [x] Isaac ROS 5.0 (Lyrical) via `isaac-ros/release-5.0 noble-jetpack` + NVIDIA's Lyrical Buildfarm for noble:
+      profile `jp721-lyrical-isaac`, test package with Isaac ROS TensorRT + `rosidl::Buffer` CUDA backend (F30-F32)
+      (2026-11-02). Isaac ROS 4.x/Jazzy (no arm64 debs, F29) stays a source build if needed
+- [x] On the Nano: `jxb test --board` 8/8, deploy + run SAM object_detection on the GPU (2026-11-03, F36-F38)
+- [ ] Remote gdb on the Nano (`board gdbserver`), nsys capture round trip
+- [ ] Board runtime for Kilted: install `ros-kilted-*` on the Nano (needs approval, shared lab board) or ship it
+- [x] Success: `object_detection_package` builds in xbuild and runs on the Nano (GPU) without on-board building
+      (2026-11-03)
+
+### Phase 2: Fleet and tracing
+- [ ] `orin-agent` v0 (health, deploy, run, logs, trace) + CLI on top
+- [ ] Multi-board deploy and concurrent debugging with ≥2 boards
+- [ ] Synchronized nsys + ros2_tracing + tegrastats capture on N boards, Perfetto reports
+- [ ] Lyrical mode (a): 26.04 Lyrical container with `--runtime nvidia` on JetPack; CUDA/cuDNN/TensorRT come from
+      the board via nvidia-container-toolkit (no CUDA 13.2/TensorRT for 26.04 sbsa, findings F23); hybrid sysroot
+      (26.04 + Lyrical + r39.2 dev debs); verify on the Nano, deploy into a mounted volume
+- [ ] CI: shellcheck, image builds, sysroot build, proof packages
+
+### Phase 3: Golden image (stock JetPack + bundle)
+- [ ] Bundle build: apt repo + container images + config, versioned with the sysroot manifest
+- [ ] `provision` command: fresh stock JetPack Nano → fully provisioned in one run
+- [ ] Optional clone/massflash image from a provisioned board
+- [ ] Bundle contains SAM stack + agent + tracing tools; measure RAM baseline on the Nano
+
+### Phase 4: Multi-distro
+- [ ] Profiles per distro and mode (Jazzy/Kilted native, Lyrical container, Lyrical source); switch = new host
+      image + sysroot + bundle. Done for the build side: `jp721-jazzy`, `jp721-kilted`, `jp721-lyrical` (2026-11-02)
+- [ ] Lyrical mode (b): native Lyrical on 24.04 from NVIDIA's Isaac ROS Buildfarm (`jp721-lyrical-isaac`, build side
+      done 2026-11-02, tests 13/13); install on the Nano needs approval; compare RAM/disk with mode (a)
+- [ ] Document the supported matrix (L4T × Ubuntu × ROS)
+
+### Phase 5: JetsonPlanner
+- [ ] C++/Qt 6 prototype: inventory + telemetry for N boards
+- [ ] Flashing, deploy, trace browser
+- [ ] Merge with xbuild (shared agent, profiles, build backend)
+
+### Bonus (when the core phases are done)
+- [ ] W8 remote GUI: check the Nano's desktop session (Wayland/Xorg); `board gui` for single windows over SSH;
+      on-demand RDP desktop; measure RAM/CPU cost
+
+---
+
+## 5. Open decisions
+
+| # | Decision | Options | Recommendation |
+|---|---|---|---|
+| D1 | Board OS base | — | **decided: stock JetPack 7.2.1 (Ubuntu 24.04)** |
+| D2 | How Lyrical (SAM) runs on a 24.04 board | — | **decided: both, as two board modes.** (a) Lyrical container (26.04 base, `--runtime nvidia`), profile `jp721-lyrical`; (b) Lyrical natively on 24.04: since Isaac ROS 5.0 (2026-09-21) NVIDIA publishes Lyrical for Noble on its Isaac ROS Buildfarm, profile `jp721-lyrical-isaac` (no own ROS source build needed). The profile selects the mode; the CLI, agent and tracing work the same in both |
+| D3 | Distro profiles | Jazzy (Isaac ROS), Kilted, Lyrical | first profile: 24.04 native (Jazzy + Isaac ROS, Kilted); Lyrical via D2 second |
+| D4 | Image build system | — | **decided by D1: no own rootfs**; bundle on stock JetPack (W4) |
+| D5 | Agent / GUI language | — | **decided: C++**, Qt 6/QML for the GUI |
+
+## 6. Questions for the team
+1. Is the SAM stack on the Nano today native or in a container, and which image is used there?
+2. Must the SAM stack stay on Lyrical, or could the board side run Jazzy/Kilted?
+3. Are build servers stronger than the 20-core / 15 GB workstation available (e.g. on the HM network)?
+4. When will more Orins (more Nanos, AGX) be added to the fleet?

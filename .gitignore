@@ -1,0 +1,12 @@
+sysroots/**
+!sysroots/.gitkeep
+.work/
+logs/
+jxb.toml
+boards.toml
+*.nsys-rep
+*.ncu-rep
+.cache/
+__pycache__/
+jetson-xbuild/
+qemu_*.core

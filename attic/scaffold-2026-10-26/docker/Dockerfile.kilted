@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.7
+FROM ubuntu:24.04
+ARG ROS_DISTRO=kilted
+ARG USERNAME=ubuntu
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 \
+    ROS_DISTRO=${ROS_DISTRO} \
+    ARM64_SYSROOT=/opt/arm64_sysroot \
+    ROS2_WS=/home/ubuntu/ros2_ws \
+    TOOLCHAINS_WS=/home/ubuntu/toolchains \
+    PRODUCT=ORIN_AGX \
+    TERM=xterm-256color
+
+COPY docker/setup-base.sh docker/setup-ros.sh docker/setup-nvidia-host-tools.sh \
+     docker/setup-user.sh docker/setup-toolchains.sh /usr/local/lib/xbuild-setup/
+RUN chmod +x /usr/local/lib/xbuild-setup/*.sh \
+ && /usr/local/lib/xbuild-setup/setup-base.sh \
+ && ROS_DISTRO=${ROS_DISTRO} /usr/local/lib/xbuild-setup/setup-ros.sh \
+ && /usr/local/lib/xbuild-setup/setup-nvidia-host-tools.sh \
+ && /usr/local/lib/xbuild-setup/setup-user.sh ${USERNAME}
+
+# Placeholder sysroot mount point (real rootfs bind-mounted at runtime)
+RUN mkdir -p /opt/arm64_sysroot && chown ${USERNAME}:${USERNAME} /opt/arm64_sysroot
+
+COPY toolchains /tmp/toolchains-src
+RUN /usr/local/lib/xbuild-setup/setup-toolchains.sh ${USERNAME} /tmp/toolchains-src \
+ && rm -rf /tmp/toolchains-src
+
+USER ${USERNAME}
+WORKDIR /home/ubuntu/ros2_ws
+ENTRYPOINT ["/usr/local/bin/entrypoint"]
+CMD ["bash"]

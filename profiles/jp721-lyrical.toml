@@ -1,0 +1,31 @@
+# Jetson Orin with stock JetPack 7.2.1 (Ubuntu 24.04) running ROS 2 Lyrical in an Ubuntu 26.04 container
+# (PLAN.md D2a). CUDA, cuDNN and TensorRT inside the container come from the board (nvidia-container-toolkit),
+# so the sysroot combines Ubuntu 26.04 + Lyrical with the same r39.2 NVIDIA dev packages as the native profiles
+# (extract-only, so their Ubuntu 24.04 origin does not matter). Binaries built here need the container on the
+# board (glibc 2.43); they don't run on the 24.04 host userspace.
+inherit = "jp721-jazzy"
+name = "jp721-lyrical"
+description = "Jetson Orin, JetPack 7.2.1 board; ROS 2 Lyrical in an Ubuntu 26.04 container on the board"
+
+[board]
+ros_distro = "lyrical"
+ros_mode = "container"
+
+[image]
+tag = "jxb:jp721-lyrical"
+ubuntu = "26.04"
+ros_distro = "lyrical"
+ros_apt_url = "https://repo.ros2.org/ubuntu/main"
+
+[sysroot]
+dir = "sysroots/jp721-lyrical"
+python = "3.14"
+codename = "resolute"
+sources = [
+    "deb [signed-by={ubuntu_key}] http://ports.ubuntu.com/ubuntu-ports resolute main restricted universe multiverse",
+    "deb [signed-by={ubuntu_key}] http://ports.ubuntu.com/ubuntu-ports resolute-updates main restricted universe multiverse",
+    "deb [signed-by={ubuntu_key}] http://ports.ubuntu.com/ubuntu-ports resolute-security main restricted universe multiverse",
+    "deb [signed-by={nvidia_key}] https://repo.download.nvidia.com/jetson/common r39.2 main",
+    "deb [signed-by={nvidia_key}] https://repo.download.nvidia.com/jetson/som r39.2 main",
+    "deb [signed-by={ros_key}] https://repo.ros2.org/ubuntu/main resolute main",
+]

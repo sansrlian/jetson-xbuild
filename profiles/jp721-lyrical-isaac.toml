@@ -1,0 +1,47 @@
+# Jetson Orin with stock JetPack 7.2.1 (Ubuntu 24.04) running ROS 2 Lyrical natively, from NVIDIA's Isaac ROS
+# Buildfarm (Lyrical built for Noble; the public ROS repo has Lyrical only for 26.04), plus Isaac ROS 5.0 from the
+# JetPack suite `noble-jetpack`. This is PLAN.md D2b without building ROS ourselves.
+inherit = "jp721-jazzy"
+name = "jp721-lyrical-isaac"
+description = "Jetson Orin, JetPack 7.2.1, ROS 2 Lyrical native (Isaac ROS Buildfarm) + Isaac ROS 5.0"
+
+[board]
+ros_distro = "lyrical"
+
+[image]
+tag = "jxb:jp721-lyrical-isaac"
+ros_distro = "lyrical"
+ros_apt_url = "https://isaac.download.nvidia.com/isaac-ros/ubuntu/main"
+ros_apt_key_url = "https://isaac.download.nvidia.com/isaac-ros/repos.key"
+ros_tools_apt_url = "http://packages.ros.org/ros2/ubuntu"
+
+[sysroot]
+dir = "sysroots/jp721-lyrical-isaac"
+sources = [
+    "deb [signed-by={ubuntu_key}] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse",
+    "deb [signed-by={ubuntu_key}] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse",
+    "deb [signed-by={ubuntu_key}] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse",
+    "deb [signed-by={nvidia_key}] https://repo.download.nvidia.com/jetson/common r39.2 main",
+    "deb [signed-by={nvidia_key}] https://repo.download.nvidia.com/jetson/som r39.2 main",
+    "deb [signed-by={nvidia_key}] https://repo.download.nvidia.com/jetson/ffmpeg r39.2 main",
+    "deb [signed-by={isaac_key}] https://isaac.download.nvidia.com/isaac-ros/ubuntu/main noble main",
+    "deb [signed-by={isaac_key}] https://isaac.download.nvidia.com/isaac-ros/release-5.0 noble-jetpack main",
+    # distro-independent ROS Python packages the Buildfarm packages depend on (python3-catkin-pkg-modules, ...)
+    "deb [signed-by={ros_key}] http://packages.ros.org/ros2/ubuntu noble main",
+]
+# rosdistro lists Lyrical only for Ubuntu 26.04; ROS package keys are resolved there (same package names on noble).
+rosdep_fallback_codename = "resolute"
+package_sets = ["base-dev", "jetpack-7.2.1-dev", "l4t-driver", "ros-dev", "isaac-ros-5"]
+# CV-CUDA comes from the Isaac ROS repo here (0.14, what the board gets with Isaac ROS), not the GitHub 0.16 debs.
+extras = ["onnxruntime", "acados", "depthai"]
+
+[keys]
+isaac = "https://isaac.download.nvidia.com/isaac-ros/repos.key"
+
+[extras.depthai]
+# Not on the Buildfarm: cross-built from the ROS release source by extras/depthai/build.sh, installed where the
+# apt package would put it.
+tarball = "file://{jxb_home}/.work/extras/dist/depthai-3.10.0-1-{ros_distro}-aarch64-jp{jetpack}.tgz"
+dest = "/opt/ros/{ros_distro}"
+optional = true
+build = "jxb exec -- /opt/jxb/extras/depthai/build.sh <repo>/.work/extras"

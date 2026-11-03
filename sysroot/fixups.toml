@@ -1,0 +1,87 @@
+# Text fixups applied to sysroot files after extraction (sysroot/build_sysroot.py).
+# Each rule replaces `find` with `replace` in `file` (board path; {ros_distro} is substituted). Keep a reason:
+# every rule works around something that only breaks when building on the host instead of on the board.
+
+[[rule]]
+file = "/opt/ros/{ros_distro}/share/rosidl_adapter/cmake/rosidl_adapt_interfaces.cmake"
+find = 'file(STRINGS "${idl_output}" idl_tuples)'
+replace = 'file(STRINGS "${idl_output}" idl_tuples ENCODING UTF-8)'
+reason = """Without ENCODING, file(STRINGS) splits lines at non-ASCII bytes, so a workspace under a path
+like /home/.../HochschuleMünchen/... breaks rosidl_generate_interfaces ("list index: 1 out of range").
+Board paths are ASCII, the host workspace path is mounted unchanged into the container."""
+
+[[rule]]
+file = "/opt/acados/interfaces/acados_template/acados_template/acados_ocp_solver.py"
+find = """
+        if build:
+            self.build(code_export_directory, with_cython=False, cmake_builder=cmake_builder, verbose=verbose)
+"""
+replace = """
+        if build:
+            self.build(code_export_directory, with_cython=False, cmake_builder=cmake_builder, verbose=verbose)
+        if os.environ.get("JXB_CROSS_BUILD"):
+            return  # jxb: generated and compiled for the board; an aarch64 solver cannot be loaded on the build host
+"""
+reason = """AcadosOcpSolver() generates, builds and then dlopen()s the solver. In a cross build the last step fails
+(aarch64 library in an x86 process) and CMake deletes the freshly built library. cross-colcon-build sets
+JXB_CROSS_BUILD=1; without it the code behaves as upstream."""
+
+[[rule]]
+file = "/opt/acados/interfaces/acados_template/acados_template/acados_sim_solver.py"
+find = """
+        if build:
+            self.build(acados_sim.code_export_directory, cmake_builder=cmake_builder, verbose=verbose)
+"""
+replace = """
+        if build:
+            self.build(acados_sim.code_export_directory, cmake_builder=cmake_builder, verbose=verbose)
+        if os.environ.get("JXB_CROSS_BUILD"):
+            return  # jxb: see acados_ocp_solver.py
+"""
+reason = "Same as for AcadosOcpSolver."
+
+[[rule]]
+file = "/usr/local/cuda-13.2/targets/sbsa-linux/include/cccl/cub/device/device_transform.cuh"
+find = """
+template <typename T>
+struct ::cuda::proclaims_copyable_arguments<CUB_NS_QUALIFIER::detail::__return_constant<T>> : ::cuda::std::true_type
+{};
+"""
+replace = """
+namespace cuda
+{
+inline namespace _LIBCUDACXX_ABI_NAMESPACE
+{
+template <typename T>
+struct proclaims_copyable_arguments<CUB_NS_QUALIFIER::detail::__return_constant<T>> : ::cuda::std::true_type
+{};
+} // namespace _LIBCUDACXX_ABI_NAMESPACE
+} // namespace cuda
+"""
+reason = """CUDA 13.2 bug (NVIDIA/cccl#8833): the specialization is declared outside its namespace with a qualified
+class-head name. nvcc's front end re-emits it as `struct ::cuda::__4::proclaims_copyable_arguments<...>` in the
+host code, which GCC 13/14 rejects ("global qualification of class name is invalid"); dropping the leading '::'
+in the source does not help for .cu files. Declaring it inside the namespace does. Breaks e.g. ONNX Runtime's CUDA
+EP, also natively on the board (same header)."""
+
+[[rule]]
+file = "/usr/local/cuda-13.2/targets/sbsa-linux/include/cccl/cub/device/dispatch/tuning/tuning_transform.cuh"
+find = """
+template <>
+struct ::cuda::proclaims_copyable_arguments<CUB_NS_QUALIFIER::detail::transform::always_true_predicate>
+    : ::cuda::std::true_type
+{};
+"""
+replace = """
+namespace cuda
+{
+inline namespace _LIBCUDACXX_ABI_NAMESPACE
+{
+template <>
+struct proclaims_copyable_arguments<CUB_NS_QUALIFIER::detail::transform::always_true_predicate>
+    : ::cuda::std::true_type
+{};
+} // namespace _LIBCUDACXX_ABI_NAMESPACE
+} // namespace cuda
+"""
+reason = "Same CUDA 13.2 bug as in device_transform.cuh (second occurrence)."

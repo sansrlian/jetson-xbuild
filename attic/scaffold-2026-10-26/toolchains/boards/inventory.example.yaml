@@ -1,0 +1,30 @@
+# Copy to boards.yaml (gitignored) or mount as /home/ubuntu/boards.yaml
+version: 1
+defaults:
+  user: ubuntu
+  # Prefer SSH keys; password is fallback for sshpass-based scripts
+  password: ""
+  ssh_port: 22
+  gdb_port: 2345
+  ros2_ws: /home/ubuntu/ros2_ws
+  ros_domain_id: 0
+  jetpack: "7.2"
+  product: ORIN_AGX   # ORIN_NANO | ORIN_NX | ORIN_AGX
+  sysroot: /opt/arm64_sysroot
+
+boards:
+  orin-agx-01:
+    ip: 192.168.100.11
+    product: ORIN_AGX
+    labels: [lab, vision]
+  orin-nano-lab:
+    ip: 192.168.100.21
+    product: ORIN_NANO
+    gdb_port: 2346
+    labels: [lab, edge]
+  orin-nano-field:
+    ip: 192.168.100.22
+    product: ORIN_NANO
+    gdb_port: 2347
+    ros_domain_id: 42
+    labels: [field]

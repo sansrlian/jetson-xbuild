@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# `colcon build` for Jetson Orin with the jxb toolchain and sysroot.
+#
+#   cross-colcon-build [colcon build options] [--cmake-args <cmake args>...]
+#
+# Build and install trees are per profile (build-<profile>/, install-<profile>/) so several ROS distros or
+# JetPack versions can be built from one workspace. Defaults that may be overridden with --cmake-args:
+# CMAKE_BUILD_TYPE=Release, BUILD_TESTING=OFF, CMAKE_EXPORT_COMPILE_COMMANDS=ON.
+set -euo pipefail
+
+# shellcheck source=/dev/null
+source "${JXB_HOME:-/opt/jxb}/toolchain/env.sh"
+if [[ -z "${ARM64_SYSROOT:-}" || ! -f "${ARM64_SYSROOT}/.jxb/profile.json" ]]; then
+    echo "cross-colcon-build: ARM64_SYSROOT must point to a jxb sysroot (missing .jxb/profile.json)" >&2
+    exit 1
+fi
+
+colcon_args=()
+cmake_args=()
+build_base="build-${JXB_PROFILE}"
+install_base="install-${JXB_PROFILE}"
+in_cmake=0
+expect_value=""
+for arg in "$@"; do
+    if [[ -n "$expect_value" ]]; then
+        [[ "$expect_value" == build ]] && build_base="$arg"
+        [[ "$expect_value" == install ]] && install_base="$arg"
+        expect_value=""
+        continue
+    fi
+    case "$arg" in
+        --cmake-args) in_cmake=1; continue ;;
+        --build-base) expect_value=build; in_cmake=0; continue ;;
+        --install-base) expect_value=install; in_cmake=0; continue ;;
+        --build-base=*) build_base="${arg#*=}"; in_cmake=0; continue ;;
+        --install-base=*) install_base="${arg#*=}"; in_cmake=0; continue ;;
+    esac
+    if (( in_cmake )); then
+        # CMake args: -D/-G/-W..., space-prefixed args, or CMake's own long options; any other --option is colcon's.
+        case "$arg" in
+            --trace|--trace-expand|--debug-find|--debug-output|--fresh|--warn-uninitialized|--log-level=*)
+                cmake_args+=("$arg") ;;
+            --*) in_cmake=0; colcon_args+=("$arg") ;;
+            *) cmake_args+=("${arg# }") ;;
+        esac
+    else
+        colcon_args+=("$arg")
+    fi
+done
+
+has_define() {
+    local key="$1" a
+    for a in "${cmake_args[@]+"${cmake_args[@]}"}"; do
+        [[ "$a" == "-D${key}="* || "$a" == "-D${key}:"* ]] && return 0
+    done
+    return 1
+}
+for a in "${cmake_args[@]+"${cmake_args[@]}"}"; do
+    if [[ "$a" == -DCMAKE_TOOLCHAIN_FILE* ]]; then
+        echo "cross-colcon-build: CMAKE_TOOLCHAIN_FILE is set by jxb and cannot be overridden" >&2
+        exit 1
+    fi
+done
+defaults=(-DCMAKE_TOOLCHAIN_FILE="${JXB_TOOLCHAIN_FILE}")
+has_define CMAKE_BUILD_TYPE || defaults+=(-DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}")
+has_define BUILD_TESTING || defaults+=(-DBUILD_TESTING=OFF)
+has_define CMAKE_EXPORT_COMPILE_COMMANDS || defaults+=(-DCMAKE_EXPORT_COMPILE_COMMANDS=ON)
+
+JXB_WS_INSTALL="$(realpath -m "${install_base}")"
+export JXB_WS_INSTALL
+# shellcheck source=/dev/null
+source "${JXB_HOME:-/opt/jxb}/toolchain/ros-cross-env.sh"
+
+printf '\033[36m[jxb] profile=%s sysroot=%s\n      build=%s install=%s\033[0m\n' \
+    "${JXB_PROFILE}" "${ARM64_SYSROOT}" "${build_base}" "${install_base}"
+rc=0
+colcon build --build-base "${build_base}" --install-base "${install_base}" \
+    "${colcon_args[@]+"${colcon_args[@]}"}" --cmake-args "${defaults[@]}" "${cmake_args[@]+"${cmake_args[@]}"}" || rc=$?
+
+# colcon's setup scripts and ament's parent_prefix_path index record the build-time underlay, i.e. the sysroot's
+# copy of /opt/ros/<distro>. On the board that is plain /opt/ros/<distro>.
+if [[ -d "${install_base}" ]]; then
+    { find "${install_base}" -maxdepth 1 -type f -name 'setup.*'
+      find "${install_base}" -type f -path '*/share/ament_index/resource_index/parent_prefix_path/*'
+    } | xargs -r sed -i "s#${ARM64_SYSROOT}/#/#g"
+fi
+exit $rc

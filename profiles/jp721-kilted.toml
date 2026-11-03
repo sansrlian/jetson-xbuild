@@ -1,0 +1,15 @@
+# Jetson Orin with stock JetPack 7.2.1 (Ubuntu 24.04) and ROS 2 Kilted, which is Tier-1 on 24.04 and therefore
+# runs natively on the board. Everything else is inherited from jp721-jazzy.
+inherit = "jp721-jazzy"
+name = "jp721-kilted"
+description = "Jetson Orin, JetPack 7.2.1 (L4T 39.2.1, Ubuntu 24.04), ROS 2 Kilted native on the board"
+
+[board]
+ros_distro = "kilted"
+
+[image]
+tag = "jxb:jp721-kilted"
+ros_distro = "kilted"
+
+[sysroot]
+dir = "sysroots/jp721-kilted"

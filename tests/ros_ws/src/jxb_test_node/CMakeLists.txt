@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.25)
+project(jxb_test_node LANGUAGES CXX CUDA)
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(cv_bridge REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+find_package(jxb_test_msgs REQUIRED)
+find_package(CUDAToolkit REQUIRED)
+find_path(TensorRT_INCLUDE_DIR NvInfer.h REQUIRED)
+find_library(TensorRT_nvinfer nvinfer REQUIRED)
+
+add_executable(detector src/detector.cpp src/invert.cu)
+target_compile_features(detector PRIVATE cxx_std_17)
+target_include_directories(detector PRIVATE ${TensorRT_INCLUDE_DIR})
+target_link_libraries(detector
+  rclcpp::rclcpp ${sensor_msgs_TARGETS} ${jxb_test_msgs_TARGETS} cv_bridge::cv_bridge
+  opencv_core opencv_imgproc CUDA::cudart ${TensorRT_nvinfer})
+install(TARGETS detector DESTINATION lib/${PROJECT_NAME})
+ament_package()

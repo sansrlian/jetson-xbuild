@@ -1,0 +1,310 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "ROS2: Debug Run (GDB)",
+            "type": "shell",
+            "linux": {
+                "command": "bash",
+                "args": [
+                    "${workspaceFolder}/.vscode/start_target_gdbserver.sh",
+                    "run",
+                    "${config:TARGET_IP}",
+                    "${config:TARGET_USER}",
+                    "${config:TARGET_PASSWORD}",
+                    "${config:NODE_PACKAGE_NAME}",
+                    "${config:NODE_EXECUTABLE_NAME}",
+                    "${config:TARGET_LOCAL_SYSROOT}",
+                    "${config:TARGET_GDB_PORT}",
+                    "${input:appArgs}"
+                ]
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "isBackground": true,
+            "dependsOn": [
+                "ROS2: Build Debug"
+            ],
+            "problemMatcher": {
+                "owner": "custom",
+                "pattern": {
+                    "regexp": ".",
+                    "file": 1,
+                    "location": 2,
+                    "message": 3
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^Listening on port$",
+                    "endsPattern": "^$"
+                }
+            }
+        },
+        {
+            "label": "ROS2: Debug Launch (GDB)",
+            "type": "shell",
+            "linux": {
+                "command": "bash",
+                "args": [
+                    "${workspaceFolder}/.vscode/start_target_gdbserver.sh",
+                    "launch",
+                    "${config:TARGET_IP}",
+                    "${config:TARGET_USER}",
+                    "${config:TARGET_PASSWORD}",
+                    "${config:LAUNCH_PACKAGE_NAME}",
+                    "${config:LAUNCH_FILE_NAME}",
+                    "${config:TARGET_LOCAL_SYSROOT}",
+                    "${config:NODE_EXECUTABLE_NAME}",
+                    "${config:TARGET_GDB_PORT}",
+                    "${input:appArgs}"
+                ]
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "isBackground": true,
+            "dependsOn": [
+                "ROS2: Build Debug"
+            ],
+            "problemMatcher": {
+                "owner": "custom",
+                "pattern": {
+                    "regexp": ".",
+                    "file": 1,
+                    "location": 2,
+                    "message": 3
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "\\[gdbserver-\\d+\\] Listening on port \\d+",
+                    "endsPattern": "\\[gdbserver-\\d+\\] Listening on port \\d+"
+                }
+            }
+        },
+        {
+            "label": "ROS2: SSH to Target",
+            "type": "shell",
+            "command": "board ssh",
+            "problemMatcher": []
+        },
+        {
+            "label": "ROS2: Launch Package LaunchFile",
+            "type": "shell",
+            "linux": {
+                "command": "bash",
+                "args": [
+                    "${workspaceFolder}/.vscode/run_program.sh",
+                    "launch",
+                    "${config:TARGET_IP}",
+                    "${config:TARGET_USER}",
+                    "${config:TARGET_PASSWORD}",
+                    "${config:LAUNCH_PACKAGE_NAME}",
+                    "${config:LAUNCH_FILE_NAME}",
+                    "${input:appArgs}"
+                ]
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "dedicated",
+                "showReuseMessage": true,
+                "clear": true
+            },
+            "isBackground": true,
+            "problemMatcher": {
+                "owner": "custom",
+                "pattern": {
+                    "regexp": ".",
+                    "file": 1,
+                    "location": 2,
+                    "message": 3
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^Running app$",
+                    "endsPattern": "^$"
+                }
+            }
+        },
+        {
+            "label": "ROS2: Run Package Executable",
+            "type": "shell",
+            "linux": {
+                "command": "bash",
+                "args": [
+                    "${workspaceFolder}/.vscode/run_program.sh",
+                    "run",
+                    "${config:TARGET_IP}",
+                    "${config:TARGET_USER}",
+                    "${config:TARGET_PASSWORD}",
+                    "${config:NODE_PACKAGE_NAME}",
+                    "${config:NODE_EXECUTABLE_NAME}",
+                    "${input:appArgs}"
+                ]
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "dedicated",
+                "showReuseMessage": true,
+                "clear": true
+            },
+            "isBackground": true,
+            "problemMatcher": {
+                "owner": "custom",
+                "pattern": {
+                    "regexp": ".",
+                    "file": 1,
+                    "location": 2,
+                    "message": 3
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^Running app$",
+                    "endsPattern": "^$"
+                }
+            }
+        },
+        {
+            "label": "ROS2: Build Debug",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-i",
+                "-l",
+                "-c",
+                "export CMAKE_BUILD_TYPE=Debug && cross-colcon-build"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            "label": "ROS2: Build Release",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-i",
+                "-l",
+                "-c",
+                "cross-colcon-build"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            "label": "ROS2: Deploy to Target",
+            "type": "shell",
+            "command": "board deploy",
+            "problemMatcher": []
+        },
+        {
+            "label": "ROS2: Clean All",
+            "type": "shell",
+            "command": "bash",
+            "args": [
+                "-c",
+                "rm -rf ${workspaceFolder}/build ${workspaceFolder}/install ${workspaceFolder}/log"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "ROS2: Install Deps on Target (rosdep)",
+            "type": "shell",
+            "command": "sshpass -p ${config:TARGET_PASSWORD} ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new ${config:TARGET_USER}@${config:TARGET_IP} 'echo ${config:TARGET_PASSWORD} | sudo -S -v && source /opt/ros/${env:ROS_DISTRO}/setup.bash && cd ${config:TARGET_ROS2_WS} && rosdep install --from-paths ./install/*/share -y -r --ignore-src'",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "dedicated",
+                "showReuseMessage": true,
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "ROS2: Check Package Versions (Sysroot and Board)",
+            "type": "shell",
+            "linux": {
+                "command": "python3",
+                "args": [
+                    "${workspaceFolder}/.vscode/check_package_versions.py",
+                    "${config:TARGET_IP}",
+                    "${config:TARGET_USER}",
+                    "${config:TARGET_PASSWORD}",
+                    "${config:TARGET_LOCAL_SYSROOT}",
+                    "${workspaceFolder}/src"
+                ]
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "dedicated",
+                "showReuseMessage": true,
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "ROS2: Deploy All Boards",
+            "type": "shell",
+            "command": "board deploy --all",
+            "problemMatcher": []
+        },
+        {
+            "label": "NVIDIA: Nsight Systems (active)",
+            "type": "shell",
+            "command": "board nsys --duration ${input:nsysDuration} -- ${config:NODE_PACKAGE_NAME} ${config:NODE_EXECUTABLE_NAME}",
+            "problemMatcher": []
+        },
+        {
+            "label": "NVIDIA: tegrastats (active)",
+            "type": "shell",
+            "command": "board tegra-stats",
+            "problemMatcher": []
+        },
+        {
+            "label": "NVIDIA: Kernel Trace (active)",
+            "type": "shell",
+            "command": "board kernel-trace --duration ${input:nsysDuration}",
+            "problemMatcher": []
+        }
+    ],
+    "inputs": [
+        {
+            "type": "promptString",
+            "id": "appArgs",
+            "description": "App arguments (leave empty if none)",
+            "default": ""
+        },
+        {
+            "id": "nsysDuration",
+            "type": "promptString",
+            "description": "Nsight / ftrace duration seconds",
+            "default": "10"
+        }
+    ]
+}

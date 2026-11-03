@@ -1,0 +1,33 @@
+{
+    "configurations": [
+        {
+            "browse": {
+                "databaseFilename": "${default}",
+                "limitSymbolsToIncludedHeaders": false
+            },
+            "includePath": [
+                "${workspaceFolder}/src/*/include/**",
+                "${config:TARGET_LOCAL_SYSROOT}/**",
+
+                "${config:TARGET_LOCAL_SYSROOT}/opt/ros/jazzy/**",
+                "${config:TARGET_LOCAL_SYSROOT}/opt/ros/jazzy/share/**",
+                "${config:TARGET_LOCAL_SYSROOT}/opt/ros/jazzy/include/**",
+                "${config:TARGET_LOCAL_SYSROOT}/opt/ros/jazzy/lib/**",
+
+                "${config:TARGET_LOCAL_SYSROOT}/usr",
+                "${config:TARGET_LOCAL_SYSROOT}/usr/lib/**",
+                "${config:TARGET_LOCAL_SYSROOT}/usr/share/**",
+                "${config:TARGET_LOCAL_SYSROOT}/usr/local/include/**",
+                "${config:TARGET_LOCAL_SYSROOT}/usr/include/c++/13/**",
+                "${config:TARGET_LOCAL_SYSROOT}/usr/include/opencv4/**",
+                "${config:TARGET_LOCAL_SYSROOT}/usr/include/**"
+            ],
+            "name": "ARM64 Cross",
+            "intelliSenseMode": "gcc-arm64",
+            "compilerPath": "/usr/bin/aarch64-linux-gnu-gcc",
+            "cStandard": "gnu11",
+            "cppStandard": "c++17"
+        }
+    ],
+    "version": 4
+}

@@ -1,0 +1,7 @@
+# Isaac ROS 5.0 (Lyrical) for JetPack 7.2, from https://isaac.download.nvidia.com/isaac-ros/release-5.0 noble-jetpack.
+# The DNN inference path: image encoder -> TensorRT node -> decoder (YOLOv8 as example), plus rosidl::Buffer CUDA backend.
+ros-lyrical-isaac-ros-common
+ros-lyrical-isaac-ros-tensor-rt
+ros-lyrical-isaac-ros-dnn-image-encoder
+ros-lyrical-isaac-ros-yolov8
+ros-lyrical-cuda-buffer

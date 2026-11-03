@@ -1,0 +1,338 @@
+#!/usr/bin/env bash
+# Multi-board Jetson Orin control plane (deploy / debug / nsys / kernel-trace).
+set -euo pipefail
+
+BOARDS_FILE="${BOARDS_FILE:-/home/ubuntu/boards.yaml}"
+STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/jetson-xbuild"
+ACTIVE_FILE="$STATE_DIR/active_board"
+TOOLCHAINS_WS="${TOOLCHAINS_WS:-/home/ubuntu/toolchains}"
+ROS2_WS="${ROS2_WS:-/home/ubuntu/ros2_ws}"
+
+usage() {
+  cat <<EOF
+Usage: board <command> [args]
+
+Commands:
+  list                         List boards from boards.yaml
+  select <name>                Set active board
+  show [name]                  Show resolved board config (default: active)
+  ssh [name] [-- <cmd>]        SSH to board
+  deploy [name|--all]          rsync install/ to board(s)
+  run [name] -- <pkg> <exe>    ros2 run on board
+  launch [name] -- <pkg> <file>
+  gdbserver run|launch ...     Start remote gdbserver (wraps start_target_gdbserver.sh)
+  nsys [--duration N] [--all] -- <pkg> <exe> [args...]
+                               Remote Nsight Systems capture → pull .nsys-rep
+  ncu [--kernel-regex RE] [--all] -- <pkg> <exe> [args...]
+                               Remote Nsight Compute (requires ncu on board)
+  tegra-stats [name|--all]     tegrastats snapshot
+  kernel-trace [name] [--duration N]
+                               ftrace/trace-cmd capture when available
+  sync-sysroot <name> <dest>   Hint: use jetson_sysroot_sync.sh from host
+
+Environment:
+  BOARDS_FILE   path to inventory (default: /home/ubuntu/boards.yaml)
+EOF
+}
+
+need_py() { command -v python3 >/dev/null 2>&1 || { echo "python3 required"; exit 1; }; }
+
+resolve_board_json() {
+  local name="${1:-}"
+  need_py
+  python3 - "$BOARDS_FILE" "$ACTIVE_FILE" "$name" <<'PY'
+import json, sys, os
+path, active_path, name = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    import yaml
+except ImportError:
+    # minimal YAML subset via json if boards.yaml is JSON; else require PyYAML
+    data = json.load(open(path))
+else:
+    data = yaml.safe_load(open(path))
+defaults = data.get("defaults") or {}
+boards = data.get("boards") or {}
+if not name:
+    if os.path.exists(active_path):
+        name = open(active_path).read().strip()
+    else:
+        sys.stderr.write("No active board. Run: board select <name>\n")
+        sys.exit(2)
+if name not in boards:
+    sys.stderr.write(f"Unknown board {name!r}. Known: {', '.join(boards)}\n")
+    sys.exit(2)
+cfg = {**defaults, **(boards[name] or {}), "name": name}
+print(json.dumps(cfg))
+PY
+}
+
+ssh_base() {
+  local cfg="$1"
+  local ip user pass port
+  ip="$(jq -r .ip <<<"$cfg")"
+  user="$(jq -r .user <<<"$cfg")"
+  pass="$(jq -r '.password // empty' <<<"$cfg")"
+  port="$(jq -r '.ssh_port // 22' <<<"$cfg")"
+  if [ -n "$pass" ] && [ "$pass" != "null" ]; then
+    SSHPASS="$pass" sshpass -e ssh -p "$port" -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+      "${user}@${ip}"
+  else
+    ssh -p "$port" -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "${user}@${ip}"
+  fi
+}
+
+ssh_cmd() {
+  local cfg="$1"; shift
+  local ip user pass port
+  ip="$(jq -r .ip <<<"$cfg")"
+  user="$(jq -r .user <<<"$cfg")"
+  pass="$(jq -r '.password // empty' <<<"$cfg")"
+  port="$(jq -r '.ssh_port // 22' <<<"$cfg")"
+  if [ -n "$pass" ] && [ "$pass" != "null" ]; then
+    SSHPASS="$pass" sshpass -e ssh -p "$port" -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \
+      "${user}@${ip}" "$@"
+  else
+    ssh -p "$port" -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "${user}@${ip}" "$@"
+  fi
+}
+
+rsync_to() {
+  local cfg="$1" src="$2" dest="$3"
+  local ip user pass port
+  ip="$(jq -r .ip <<<"$cfg")"
+  user="$(jq -r .user <<<"$cfg")"
+  pass="$(jq -r '.password // empty' <<<"$cfg")"
+  port="$(jq -r '.ssh_port // 22' <<<"$cfg")"
+  if [ -n "$pass" ] && [ "$pass" != "null" ]; then
+    sudo rsync -az --delete-during -e "sshpass -e ssh -p $port -o StrictHostKeyChecking=no" \
+      "$src" "${user}@${ip}:${dest}"
+  else
+    rsync -az --delete-during -e "ssh -p $port -o StrictHostKeyChecking=no" \
+      "$src" "${user}@${ip}:${dest}"
+  fi
+}
+
+all_names() {
+  need_py
+  python3 - "$BOARDS_FILE" <<'PY'
+import sys
+try:
+  import yaml
+  data=yaml.safe_load(open(sys.argv[1]))
+except Exception:
+  import json
+  data=json.load(open(sys.argv[1]))
+print("\n".join((data.get("boards") or {})))
+PY
+}
+
+cmd="${1:-}"
+[ -n "$cmd" ] || { usage; exit 1; }
+shift || true
+
+case "$cmd" in
+  list)
+    [ -f "$BOARDS_FILE" ] || { echo "Missing $BOARDS_FILE — copy boards.example.yaml"; exit 1; }
+    need_py
+    python3 - "$BOARDS_FILE" "$ACTIVE_FILE" <<'PY'
+import os, sys
+try:
+  import yaml
+  data=yaml.safe_load(open(sys.argv[1]))
+except Exception as e:
+  raise SystemExit(e)
+active=open(sys.argv[2]).read().strip() if os.path.exists(sys.argv[2]) else ""
+defaults=data.get("defaults") or {}
+for name, b in (data.get("boards") or {}).items():
+  cfg={**defaults, **(b or {})}
+  mark="*" if name==active else " "
+  labels=",".join(cfg.get("labels") or [])
+  print(f"{mark} {name:20} {cfg.get('ip','?'):16} product={cfg.get('product','?'):10} gdb={cfg.get('gdb_port','?')}  {labels}")
+PY
+    ;;
+  select)
+    name="${1:?board name required}"
+    resolve_board_json "$name" >/dev/null
+    mkdir -p "$STATE_DIR"
+    echo "$name" > "$ACTIVE_FILE"
+    echo "Active board → $name"
+    ;;
+  show)
+    cfg="$(resolve_board_json "${1:-}")"
+    echo "$cfg" | jq .
+    ;;
+  ssh)
+    name=""
+    if [ "${1:-}" != "--" ] && [ -n "${1:-}" ]; then name="$1"; shift; fi
+    [ "${1:-}" = "--" ] && shift
+    cfg="$(resolve_board_json "$name")"
+    if [ "$#" -eq 0 ]; then
+      ssh_base "$cfg"
+    else
+      ssh_cmd "$cfg" "$@"
+    fi
+    ;;
+  deploy)
+    targets=()
+    if [ "${1:-}" = "--all" ]; then
+      mapfile -t targets < <(all_names)
+    elif [ -n "${1:-}" ]; then
+      targets=("$1")
+    else
+      targets=("$(cat "$ACTIVE_FILE" 2>/dev/null || true)")
+      [ -n "${targets[0]:-}" ] || { echo "No active board"; exit 2; }
+    fi
+    install_dir="$ROS2_WS/install"
+    [ -d "$install_dir" ] || { echo "Missing $install_dir — build first"; exit 1; }
+    for name in "${targets[@]}"; do
+      cfg="$(resolve_board_json "$name")"
+      dest="$(jq -r .ros2_ws <<<"$cfg")"
+      echo "==> Deploy $name → $(jq -r .ip <<<"$cfg"):$dest/install"
+      ssh_cmd "$cfg" "mkdir -p '$dest'"
+      # Export SSHPASS for rsync_to when password set
+      export SSHPASS
+      SSHPASS="$(jq -r '.password // empty' <<<"$cfg")"
+      rsync_to "$cfg" "$install_dir" "$dest/"
+    done
+    ;;
+  run|launch)
+    mode="$cmd"
+    name=""
+    if [ "${1:-}" != "--" ] && [ -n "${1:-}" ]; then name="$1"; shift; fi
+    [ "${1:-}" = "--" ] && shift
+    pkg="${1:?package}"; exe="${2:?executable_or_launch}"; shift 2 || true
+    cfg="$(resolve_board_json "$name")"
+    dest="$(jq -r .ros2_ws <<<"$cfg")"
+    domain="$(jq -r '.ros_domain_id // 0' <<<"$cfg")"
+    remote="set -e; source /opt/ros/\${ROS_DISTRO:-$ROS_DISTRO}/setup.bash 2>/dev/null || true; \
+      source '$dest/install/setup.bash'; export ROS_DOMAIN_ID=$domain; \
+      ros2 $mode $pkg $exe $*"
+    ssh_cmd "$cfg" "bash -lc $(printf '%q' "$remote")"
+    ;;
+  gdbserver)
+    sub="${1:?run|launch}"; shift
+    cfg="$(resolve_board_json "")"
+    ip="$(jq -r .ip <<<"$cfg")"
+    user="$(jq -r .user <<<"$cfg")"
+    pass="$(jq -r '.password // empty' <<<"$cfg")"
+    port="$(jq -r .gdb_port <<<"$cfg")"
+    sysroot="${ARM64_SYSROOT:-/opt/arm64_sysroot}"
+    # Reuse upstream-style helper with active board fields
+    exec "$TOOLCHAINS_WS/.vscode/start_target_gdbserver.sh" "$sub" \
+      "$ip" "$user" "${pass:-ubuntu}" "$@" "$sysroot" "$port"
+    ;;
+  nsys)
+    duration=10
+    all=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --duration) duration="$2"; shift 2 ;;
+        --all) all=1; shift ;;
+        --) shift; break ;;
+        *) break ;;
+      esac
+    done
+    [ "${1:-}" = "--" ] && shift
+    pkg="${1:?}"; exe="${2:?}"; shift 2 || true
+    names=()
+    if [ "$all" -eq 1 ]; then mapfile -t names < <(all_names)
+    else names=("$(cat "$ACTIVE_FILE")"); fi
+    outdir="$ROS2_WS/nsight_reports"; mkdir -p "$outdir"
+    for name in "${names[@]}"; do
+      cfg="$(resolve_board_json "$name")"
+      dest="$(jq -r .ros2_ws <<<"$cfg")"
+      stamp="$(date +%Y%m%d-%H%M%S)"
+      remote_rep="/tmp/${name}-${stamp}.nsys-rep"
+      echo "==> nsys on $name (${duration}s)"
+      ssh_cmd "$cfg" "bash -lc $(printf '%q' "
+        set -e
+        source /opt/ros/\${ROS_DISTRO:-jazzy}/setup.bash 2>/dev/null || true
+        source '$dest/install/setup.bash'
+        if ! command -v nsys >/dev/null; then echo 'nsys not installed on board'; exit 3; fi
+        nsys profile -t cuda,nvtx,osrt,cudnn,cublas -o '${remote_rep%.nsys-rep}' -d $duration --force-overwrite true \
+          ros2 run $pkg $exe $*
+      ")"
+      ip="$(jq -r .ip <<<"$cfg")"
+      user="$(jq -r .user <<<"$cfg")"
+      pass="$(jq -r '.password // empty' <<<"$cfg")"
+      local_rep="$outdir/${name}-${stamp}.nsys-rep"
+      if [ -n "$pass" ] && [ "$pass" != "null" ]; then
+        SSHPASS="$pass" sshpass -e scp -o StrictHostKeyChecking=no "${user}@${ip}:${remote_rep}" "$local_rep" || true
+      else
+        scp -o StrictHostKeyChecking=no "${user}@${ip}:${remote_rep}" "$local_rep" || true
+      fi
+      echo "Report: $local_rep"
+    done
+    ;;
+  ncu)
+    kre=".*"
+    all=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --kernel-regex) kre="$2"; shift 2 ;;
+        --all) all=1; shift ;;
+        --) shift; break ;;
+        *) break ;;
+      esac
+    done
+    [ "${1:-}" = "--" ] && shift
+    pkg="${1:?}"; exe="${2:?}"; shift 2 || true
+    names=()
+    if [ "$all" -eq 1 ]; then mapfile -t names < <(all_names)
+    else names=("$(cat "$ACTIVE_FILE")"); fi
+    outdir="$ROS2_WS/nsight_reports"; mkdir -p "$outdir"
+    for name in "${names[@]}"; do
+      cfg="$(resolve_board_json "$name")"
+      dest="$(jq -r .ros2_ws <<<"$cfg")"
+      stamp="$(date +%Y%m%d-%H%M%S)"
+      remote_rep="/tmp/${name}-${stamp}.ncu-rep"
+      ssh_cmd "$cfg" "bash -lc $(printf '%q' "
+        set -e
+        source '$dest/install/setup.bash'
+        command -v ncu >/dev/null || { echo 'ncu missing on board'; exit 3; }
+        ncu --kernel-name-base function --kernel-name regex:'$kre' -o '${remote_rep%.ncu-rep}' --force-overwrite \
+          ros2 run $pkg $exe $*
+      ")"
+      echo "ncu finished on $name (pull $remote_rep manually if needed)"
+    done
+    ;;
+  tegra-stats)
+    if [ "${1:-}" = "--all" ]; then mapfile -t names < <(all_names); else names=("${1:-$(cat "$ACTIVE_FILE")}"); fi
+    for name in "${names[@]}"; do
+      cfg="$(resolve_board_json "$name")"
+      echo "==> tegrastats $name"
+      ssh_cmd "$cfg" "bash -lc 'timeout 3 tegrastats || true'"
+    done
+    ;;
+  kernel-trace)
+    duration=5
+    name=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --duration) duration="$2"; shift 2 ;;
+        *) name="$1"; shift ;;
+      esac
+    done
+    cfg="$(resolve_board_json "$name")"
+    outdir="$ROS2_WS/nsight_reports"; mkdir -p "$outdir"
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    remote="/tmp/trace-${stamp}.dat"
+    ssh_cmd "$cfg" "bash -lc $(printf '%q' "
+      set -e
+      if command -v trace-cmd >/dev/null; then
+        sudo trace-cmd record -e sched:sched_switch -e irq -e syscalls -o $remote sleep $duration
+      else
+        echo 'trace-cmd not installed; enabling brief ftrace sched_switch'
+        sudo bash -c 'echo 0 > /sys/kernel/debug/tracing/tracing_on || true'
+        sudo bash -c 'echo sched:sched_switch > /sys/kernel/debug/tracing/set_event || true'
+        sudo bash -c 'echo 1 > /sys/kernel/debug/tracing/tracing_on'
+        sleep $duration
+        sudo bash -c 'echo 0 > /sys/kernel/debug/tracing/tracing_on'
+        sudo cp /sys/kernel/debug/tracing/trace /tmp/ftrace-${stamp}.txt || true
+      fi
+    ")"
+    echo "Kernel trace attempted on $(jq -r .name <<<"$cfg")"
+    ;;
+  -h|--help|help) usage ;;
+  *) echo "Unknown command: $cmd"; usage; exit 1 ;;
+esac

@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>jxb_test_node</name>
+  <version>0.1.0</version>
+  <description>jxb cross-build test: rclcpp node with CUDA, TensorRT, cv_bridge and a workspace interface.</description>
+  <maintainer email="dev@example.com">jxb</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>jxb_test_msgs</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

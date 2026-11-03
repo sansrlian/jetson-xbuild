@@ -1,0 +1,58 @@
+# Sysroot relocation fixups (for cross build)
+# - Fix hardcoded absolute paths inside sysroot CMake export files (*Targets*.cmake / *Export.cmake).
+# - If you hit an error like "references the file ... but this file does not exist":
+#   1) Find the broken path:
+#        grep -RIn "/opt/ros/${ROS_DISTRO}" ${ARM64_SYSROOT}/opt/ros/${ROS_DISTRO}/lib/aarch64-linux-gnu/cmake/<pkg>
+#   2) Add a new entry below:
+#        <package_name>:
+#          - file: "<path relative to ARM64_SYSROOT>"
+#            find: "<string to replace>"
+#            replace: "<replacement, usually ${_IMPORT_PREFIX} or ${_IMPORT_PREFIX}/../../..>"
+#   3) Re-run the sysroot-fix script, then rebuild.
+
+# Sample error fixes:
+# Starting >>> ruiyan_rh2_dexhand
+# --- stderr: rh6_ctrl
+# CMake Error at /opt/arm64-sysroot/opt/ros/jazzy/lib/aarch64-linux-gnu/cmake/pinocchio/pinocchioTargets.cmake:146 (message):
+#   The imported target "pinocchio::pinocchio_pywrap_default" references the
+#   file
+#      "/opt/ros/jazzy/lib/python3.12/site-packages/pinocchio/pinocchio_pywrap_default.cpython-312-aarch64-linux-gnu.so.3.8.0"
+#   but this file does not exist.  Possible reasons include:
+#   * The file was deleted, renamed, or moved to another location.
+#   * An install or uninstall procedure did not complete successfully.
+#   * The installation package was faulty and contained
+#      "/opt/arm64-sysroot/opt/ros/jazzy/lib/aarch64-linux-gnu/cmake/pinocchio/pinocchioTargets.cmake"
+#   but not all the files it references.
+# Call Stack (most recent call first):
+#   /opt/arm64-sysroot/opt/ros/jazzy/lib/aarch64-linux-gnu/cmake/pinocchio/pinocchioConfig.cmake:176 (include)
+#   CMakeLists.txt:66 (find_package)
+# --- end of stderr
+
+### Example entry ###
+# some_package:
+#   - file: "${ARM64_SYSROOT}/opt/ros/${ROS_DISTRO}/lib/aarch64-linux-gnu/cmake/some_package/some_packageTargets-none.cmake"
+#     find: "/opt/ros/${ROS_DISTRO}"
+#     replace: "${_IMPORT_PREFIX}"
+
+# Note that the ARM64_SYSROOT and ROS_DISTRO variables are defined in the /usr/local/bin/sysroot-fix script.
+# You should not need to modify them here.
+
+pinocchio:
+  - file: "${ARM64_SYSROOT}/opt/ros/${ROS_DISTRO}/lib/aarch64-linux-gnu/cmake/pinocchio/pinocchioTargets-none.cmake"
+    find: "/opt/ros/${ROS_DISTRO}"
+    replace: "${_IMPORT_PREFIX}"
+
+hardware_interface:
+  - file: "${ARM64_SYSROOT}/opt/ros/${ROS_DISTRO}/share/hardware_interface/cmake/export_hardware_interfaceExport.cmake"
+    find: "/opt/ros/${ROS_DISTRO}"
+    replace: "${_IMPORT_PREFIX}"
+
+controller_interface:
+  - file: "${ARM64_SYSROOT}/opt/ros/${ROS_DISTRO}/share/controller_interface/cmake/export_controller_interfaceExport.cmake"
+    find: "/opt/ros/${ROS_DISTRO}"
+    replace: "${_IMPORT_PREFIX}"
+
+flann:
+  - file: "${ARM64_SYSROOT}/usr/lib/cmake/flann/flann-targets-none.cmake"
+    find: "/usr/lib/aarch64-linux-gnu/liblz4.so"
+    replace: "${_IMPORT_PREFIX}/lib/aarch64-linux-gnu/liblz4.so"

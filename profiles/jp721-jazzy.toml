@@ -1,0 +1,94 @@
+# Profile: everything that has to match between the xbuild image, the sysroot and the boards.
+# One profile = one board software state (JetPack + ROS distro). Switching distros = switching profiles.
+name = "jp721-jazzy"
+description = "Jetson Orin, JetPack 7.2.1 (L4T 39.2.1, Ubuntu 24.04), ROS 2 Jazzy native on the board"
+
+[board]
+jetpack = "7.2.1"
+l4t = "39.2.1"
+soc = "t234"                       # Orin (Nano / NX / AGX)
+cpu_flags = "-mcpu=cortex-a78ae"
+cuda_arch = "87"
+qemu_cpu = "cortex-a76"            # closest QEMU model to Orin's Cortex-A78AE (ARMv8.2-A, no SVE) for test runs
+gpu_variant = "nvgpu"              # JetPack 7.2 CUDA driver variant (/opt/nvidia/l4t-gpu-libs/<variant>); Thor: openrm
+ros_distro = "jazzy"
+ros_mode = "native"                # native | container (Lyrical on 24.04 boards, see PLAN.md D2)
+
+[image]
+tag = "jxb:jp721-jazzy"
+dockerfile = "docker/xbuild.Dockerfile"
+ros_distro = "jazzy"
+cuda_version = "13.2"
+cuda_dash = "13-2"
+cuda_pkg_version = "13.2.86-1"     # must equal the board's cuda-cudart-13-2
+
+[sysroot]
+dir = "sysroots/jp721-jazzy"
+arch = "arm64"
+codename = "noble"                 # Ubuntu of the board userspace (rosdep resolution)
+python = "3.12"
+cuda_target = "sbsa-linux"         # CUDA 13 on JetPack 7.2 uses the unified Arm (SBSA) layout, also on Orin
+# Same repositories the board uses: Ubuntu ports, the three L4T r39.2 repos (from nvidia-l4t-apt-source)
+# and ROS 2. {ubuntu_key}, {nvidia_key} and {ros_key} are replaced with the downloaded keyring paths.
+sources = [
+    "deb [signed-by={ubuntu_key}] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse",
+    "deb [signed-by={ubuntu_key}] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse",
+    "deb [signed-by={ubuntu_key}] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse",
+    "deb [signed-by={nvidia_key}] https://repo.download.nvidia.com/jetson/common r39.2 main",
+    "deb [signed-by={nvidia_key}] https://repo.download.nvidia.com/jetson/som r39.2 main",
+    "deb [signed-by={nvidia_key}] https://repo.download.nvidia.com/jetson/ffmpeg r39.2 main",
+    "deb [signed-by={ros_key}] http://packages.ros.org/ros2/ubuntu noble main",
+]
+# First entry = /etc/apt/preferences.d/nvidia-repo-pin from nvidia-l4t-apt-source (NVIDIA packages win).
+# Exception: OpenCV. ROS cv_bridge links Ubuntu's OpenCV 4.6; with NVIDIA's 4.8 (no CUDA modules in JP 7.2.1)
+# every cv_bridge node would load both versions. Ubuntu's 4.6 runtime is on the board via cv_bridge anyway.
+preferences = """
+Package: *
+Pin: origin "*.nvidia.com"
+Pin-Priority: 600
+
+Package: libopencv-dev
+Pin: origin "ports.ubuntu.com"
+Pin-Priority: 700
+"""
+package_sets = ["base-dev", "jetpack-7.2.1-dev", "l4t-driver", "ros-dev"]
+extras = ["onnxruntime", "cvcuda", "acados"]
+
+[container]
+# Board-absolute paths that packages hard-code (e.g. SAM's object_detection uses /opt/onnxruntime). The
+# dev container maps them to the sysroot's copy, read-only.
+board_paths = ["/opt/onnxruntime", "/opt/acados"]
+
+[deploy]
+# Shipped with `jxb deploy` to <deploy_dir>/runtime/<path> and put first on LD_LIBRARY_PATH by `jxb run`:
+# jxb's ONNX Runtime GPU build (CUDA + TensorRT EP) and acados, without touching the board's /opt.
+runtime = ["/opt/onnxruntime", "/opt/acados"]
+
+[keys]
+ubuntu = "/usr/share/keyrings/ubuntu-archive-keyring.gpg"
+nvidia = "https://repo.download.nvidia.com/jetson/jetson-ota-public.asc"
+ros = "https://raw.githubusercontent.com/ros/rosdistro/master/ros.key"
+
+[extras.onnxruntime]
+# Same layout as the SAM dev image: /opt/onnxruntime (SAM's object_detection hard-codes that path).
+# The release tarball is CPU-only. Microsoft's aarch64 CUDA EP plugin has no sm_87 code (no Orin, findings F8),
+# so the GPU build comes from extras/onnxruntime/build.sh (CUDA + TensorRT EP, sm_87); once it exists in
+# .work/extras/dist it replaces the release tarball.
+version = "1.31.0"
+url = "https://github.com/microsoft/onnxruntime/releases/download/v{version}/onnxruntime-linux-aarch64-{version}.tgz"
+local_build = "file://{jxb_home}/.work/extras/dist/onnxruntime-linux-aarch64-{version}-jp{jetpack}-sm87.tgz"
+
+[extras.cvcuda]
+# Same version as the SAM dev image (image_processing_package uses nvcv_types / cvcuda).
+version = "0.16.0"
+debs = [
+    "https://github.com/CVCUDA/CV-CUDA/releases/download/v{version}/cvcuda-lib-{version}-cuda13-aarch64-linux.deb",
+    "https://github.com/CVCUDA/CV-CUDA/releases/download/v{version}/cvcuda-dev-{version}-cuda13-aarch64-linux.deb",
+]
+
+[extras.acados]
+# Cross-built by jxb (same version as the old on-board install, /opt/acados on the board).
+tarball = "file://{jxb_home}/.work/extras/dist/acados-0.5.2-aarch64-jp{jetpack}.tgz"
+dest = "/opt/acados"
+optional = true
+build = "jxb exec -- /opt/jxb/extras/acados/build.sh <repo>/.work/extras"

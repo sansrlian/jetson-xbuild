@@ -1,0 +1,16 @@
+# JetPack 7.2.1 developer libraries, versions as pinned by nvidia-jetpack-dev 7.2.1-b49.
+# Only -dev packages and their libraries; no samples, docs, Nsight or DeepStream.
+cuda-libraries-dev-13-2=13.2.2-1
+cuda-crt-13-2=13.2.86-1
+cuda-nvcc-13-2=13.2.86-1        # target headers nvcc needs with --target-directory (fatbinary_section.h, ...)
+cuda-nvtx-13-2
+cuda-profiler-api-13-2
+cuda-nvml-dev-13-2
+libcudnn9-dev-cuda-13=9.20.0.46-1
+libnvinfer-dev=10.16.2.10-1+cuda13.2
+libnvinfer-plugin-dev=10.16.2.10-1+cuda13.2
+libnvonnxparsers-dev=10.16.2.10-1+cuda13.2
+libnvinfer-dispatch-dev=10.16.2.10-1+cuda13.2
+libnvinfer-lean-dev=10.16.2.10-1+cuda13.2
+vpi4-dev=4.1.4
+libnvvpi4=4.1.4

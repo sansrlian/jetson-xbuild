@@ -1,0 +1,5 @@
+# L4T driver user-space (libcuda.so.1, libnvrm*, ...). Only needed so the linker can resolve the
+# dependencies of CUDA/TensorRT/VPI libraries. Extracted only; maintainer scripts never run.
+nvidia-l4t-core
+nvidia-l4t-cuda
+nvidia-l4t-cuda-nvgpu    # Orin uses the nvgpu driver (Thor uses openrm)

@@ -1,0 +1,11 @@
+# ROS 2 for the board ({ros_distro} from the profile; same sync as the host ROS in the xbuild image).
+ros-{ros_distro}-ros-base
+ros-{ros_distro}-rosidl-default-generators
+ros-{ros_distro}-rmw-cyclonedds-cpp
+ros-{ros_distro}-cv-bridge
+ros-{ros_distro}-image-transport
+ros-{ros_distro}-sensor-msgs
+ros-{ros_distro}-vision-msgs
+ros-{ros_distro}-tf2-ros
+ros-{ros_distro}-tf2-geometry-msgs
+ros-{ros_distro}-diagnostic-updater

@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Check cross-built ELF files before they go to a board.
+
+For every ELF file under the given paths: aarch64 machine type, the board's dynamic loader, no build-host
+paths in RUNPATH/RPATH, and every DT_NEEDED library resolvable the way the board will resolve it (RUNPATH,
+the install tree's lib dirs, which the ROS setup scripts put on LD_LIBRARY_PATH, and the sysroot's linker paths),
+and every required symbol version (GLIBC_*, GLIBCXX_*, ...) defined by the library it resolves to. The last check
+catches code that compiled against the cross compiler's own libc/libstdc++ instead of the board's.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+READELF = "aarch64-linux-gnu-readelf"
+LOADER = "/lib/ld-linux-aarch64.so.1"
+HOST_PATH_HINTS = ("/home/", "/tmp/", "/root/", "x86_64-linux")
+
+
+def is_elf(p: Path) -> bool:
+    try:
+        with open(p, "rb") as f:
+            return f.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def readelf(p: Path) -> dict:
+    out = subprocess.run([READELF, "-h", "-l", "-d", "-V", "-W", str(p)], capture_output=True, text=True).stdout
+    machine = re.search(r"Machine:\s+(.+)", out)
+    etype = re.search(r"Type:\s+(\S+)", out)
+    runpath = re.findall(r"\((?:RUNPATH|RPATH)\)\s+Library (?:runpath|rpath): \[(.+?)\]", out)
+    interp = re.search(r"\[Requesting program interpreter: (.+?)\]", out)
+    # .gnu.version_r: "File: libstdc++.so.6" followed by "Name: GLIBCXX_3.4.32" lines;
+    # .gnu.version_d: "Name: GLIBC_2.38" lines of the versions this file defines.
+    version_needs, defined, section, current = {}, set(), "", ""
+    for line in out.splitlines():
+        if line.startswith("Version needs section"):
+            section = "r"
+        elif line.startswith("Version definition section"):
+            section = "d"
+        elif line.startswith("Version symbols section") or not line.strip():
+            section = "" if not line.strip() and section == "d" else section
+        m = re.search(r"File: (\S+)", line)
+        if section == "r" and m:
+            current = m.group(1)
+            version_needs.setdefault(current, set())
+        n = re.search(r"Name: (\S+)", line)
+        if n and section == "r" and current:
+            version_needs[current].add(n.group(1))
+        elif n and section == "d":
+            defined.add(n.group(1))
+    return {"machine": machine.group(1).strip() if machine else "?", "type": etype.group(1) if etype else "?",
+            "needed": re.findall(r"\(NEEDED\)\s+Shared library: \[(.+?)\]", out),
+            "runpath": [d for r in runpath for d in r.split(":")], "interp": interp.group(1) if interp else "",
+            "version_needs": version_needs, "defined": defined}
+
+
+_defined_cache: dict[Path, set[str]] = {}
+
+
+def defined_versions(lib: Path) -> set[str]:
+    real = lib.resolve()
+    if real not in _defined_cache:
+        _defined_cache[real] = readelf(real)["defined"]
+    return _defined_cache[real]
+
+
+def sysroot_dirs(sysroot: Path, distro: str, cuda: str, cuda_target: str) -> list[Path]:
+    dirs = ["/lib/aarch64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/lib", "/usr/lib",
+            f"/opt/ros/{distro}/lib", f"/opt/ros/{distro}/lib/aarch64-linux-gnu",
+            f"/usr/local/cuda-{cuda}/targets/{cuda_target}/lib", "/opt/onnxruntime/lib", "/opt/acados/lib"]
+    for conf in sorted((sysroot / "etc/ld.so.conf.d").glob("*.conf")):
+        dirs += [l.strip() for l in conf.read_text().splitlines() if l.strip().startswith("/")]
+    return [sysroot / d.lstrip("/") for d in dict.fromkeys(dirs)]
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("paths", nargs="+", type=Path)
+    ap.add_argument("--sysroot", type=Path, default=os.environ.get("ARM64_SYSROOT"))
+    ap.add_argument("--extra-libdir", action="append", default=[], type=Path,
+                    help="additional runtime lib dir (e.g. a plugin dir loaded by the app)")
+    ap.add_argument("-v", "--verbose", action="store_true")
+    a = ap.parse_args()
+    if not a.sysroot:
+        sys.exit("jxb-elfcheck: --sysroot or ARM64_SYSROOT required")
+    distro = os.environ.get("ROS_DISTRO", "jazzy")
+    sdirs = sysroot_dirs(a.sysroot, distro, os.environ.get("JXB_CUDA_VERSION", "13.2"),
+                         os.environ.get("JXB_CUDA_TARGET", "sbsa-linux"))
+
+    files = []
+    for root in a.paths:
+        for p in ([root] if root.is_file() else root.rglob("*")):
+            if p.is_file() and not p.is_symlink() and is_elf(p):
+                files.append(p)
+    tree_libdirs = sorted({p.parent for p in files if ".so" in p.name}
+                          | {d for r in a.paths if r.is_dir() for d in r.rglob("lib") if d.is_dir()})
+    problems = 0
+    for p in sorted(files):
+        e = readelf(p)
+        machine, etype, needed, runpath, interp = e["machine"], e["type"], e["needed"], e["runpath"], e["interp"]
+        issues = []
+        if "AArch64" not in machine:
+            issues.append(f"machine is {machine}, not AArch64")
+        if interp and interp != LOADER:
+            issues.append(f"interpreter {interp}")
+        for d in runpath:
+            if any(h in d for h in HOST_PATH_HINTS) and "$ORIGIN" not in d:
+                issues.append(f"build-host path in RUNPATH: {d}")
+        search = [Path(d.replace("$ORIGIN", str(p.parent))) if "$ORIGIN" in d else a.sysroot / d.lstrip("/")
+                  for d in runpath] + tree_libdirs + a.extra_libdir + sdirs
+        for lib in needed:
+            found = next((d / lib for d in search if (d / lib).exists()), None)
+            if found is None:
+                issues.append(f"unresolved {lib}")
+                continue
+            missing = sorted(e["version_needs"].get(lib, set()) - defined_versions(found))
+            if missing:
+                issues.append(f"{lib} ({found}) lacks symbol versions {', '.join(missing)}")
+        if issues:
+            problems += 1
+            print(f"FAIL {p}")
+            for i in issues:
+                print(f"     - {i}")
+        elif a.verbose:
+            print(f"ok   {p} ({etype}, {len(needed)} needed)")
+    print(f"jxb-elfcheck: {len(files)} ELF files, {problems} with problems")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
