@@ -213,6 +213,53 @@ Implementation notes and every pitfall found on the way: [docs/findings.md](docs
 - [x] Success: `object_detection_package` builds in xbuild and runs on the Nano (GPU) without on-board building
       (2026-11-03)
 
+### Phase 1b: Board workflows (next, 2026-11-03)
+Like the Renesas RDK's VS Code tasks/launch configs, but as `jxb` commands first; the VS Code files only call
+`jxb`, so the same workflows work from the terminal, from VS Code and later from JetsonPlanner.
+- [ ] All profiles on the Nano: Jazzy native (done), Kilted and Lyrical-on-Noble as portable runtime under
+      `~/jxb/<profile>` (no apt on the shared board), Lyrical (26.04) as container (`docker`, `nvidia` is in the
+      docker group). Done: Kilted (tests 14 + 9) and Lyrical + Isaac ROS 5.0 (15 + 10) from the shipped
+      `/opt/ros/<distro>`, SAM `object_detection` on the GPU under both (F44). Lyrical 26.04: `board_exec` runs
+      it in `jxb-rt:<profile>` (arm64 image imported from the sysroot on the host, GPU via CDI); image loaded on
+      the Nano, `jxb --profile jp721-lyrical test --board nano-lab` still to run
+- [x] GPU inference benchmark with ONNX Runtime (CUDA EP, TensorRT EP FP16) vs `trtexec` on a SAM YOLO model:
+      latency p50/p99, throughput (feeds the inference plan in `quantization-aware-model/PLAN.md`).
+      S0 on the Nano: CUDA EP 35.1 ms, TensorRT EP fp32 22.6 ms, **fp16 11.8 ms**, trtexec fp16 10.8 ms
+      (findings F41); nsys shows the CUDA EP's synchronous input staging (F46)
+- [x] Remote debug: `jxb debug` (gdbserver on the board's loopback through an SSH tunnel, host gdb or
+      gdb-multiarch with the sysroot), `--launch` for one node of a launch file, `jxb gdb`/`jxb-gdb` for VS Code,
+      `jxb ssh`. Verified on the Nano with SAM `object_detection` (F42)
+- [x] Remote trace: `jxb trace nsys|tegrastats|kernel` → `traces/<board>/<stamp>-<kind>/`; live tegrastats and
+      live kernel trace (raw `trace_pipe` or per-second scheduler statistics); kernel tracing gets root via sudo
+      (password typed by the user), a privileged container or not at all; `jxb trace gui` shows the board's
+      `nsys-ui`/`ncu-ui` over SSH X11 (docs/workflows.md). nsys and tegrastats verified on the Nano; the kernel
+      trace helper so far only against a mock tracefs (needs one run with root on the board)
+- [x] Trace analytics: `jxb trace report` → `summary.json` (GPU kernels/busy time, memcpy, CUDA API, NVTX, OS
+      runtime, CPU samples; tegrastats means/max/energy + CSV; per-task CPU time, wakeup latency, IRQs),
+      `jxb trace list --json`, JSON-lines live streams
+- [x] `jxb vscode init -w <ws>`: Renesas-style tasks and cppdbg configs (build, deploy, run, launch, debug a node
+      or one node of a launch file, SSH, traces) in `vscode/<ws>.code-workspace`, so the workspace's own
+      `.vscode/` stays untouched (`--into-workspace` writes it there only if absent). Debug flow replayed over MI
+      (F47); not yet clicked through in the VS Code GUI
+- [ ] Newest SAM develop (d115bc5f, Lyrical on 26.04): builds 25/27 on both Lyrical profiles, object_detection
+      finds the CUDA EP plugin from jxb's ORT on the Nano (with a path override). Open: ros2_control/Gazebo in
+      the sysroots (size decision), SAM fixes for `ekf_core` install and the plugin path (F55)
+- [ ] CUDA kernel debugging: `cuda-gdbserver` is on the board; needs a host `cuda-gdb` that supports aarch64
+      targets (check NVIDIA's x86 package) and a launch config for it
+- [x] Renesas-style launch mode: `jxb launch` (deploy of selected packages + the workspace's launch/config/
+      assets files, `ros2 launch` of a package's or the workspace's launch file, clean SIGINT stop, process groups),
+      `--monitor` (tegrastats + per-process CPU/RSS by ancestry), `--bag` (+ CSV of numeric topics), `--with`
+      helpers (synthetic camera `tools/board/jxb_image_pub.py`), VS Code tasks with module/argument settings
+- [x] Native or container for every board command (`--mode`): SAM's detector verified natively on Jazzy and on
+      Kilted (shipped ROS), and in the Kilted runtime container with TensorRT (+0.6 ms, +155 MB vs. native; F50,
+      F56). ONNX Runtime's CUDA EP inside the container reset the board once: open, needs root to read pstore
+- [x] Inference baselines (`jxb trace bench`): ONNX Runtime CPU/CUDA/TensorRT EP vs. trtexec engines, fp32/fp16 and
+      INT8 (PTQ/QAT/full INT8, YOLO26n) (F49); SAM node: ONNX Runtime 46 ms vs. TensorRT fp16 17 ms vs. INT8 15 ms,
+      -0.9 GB RAM, -1 W (F50); plots and comparisons: `jxb trace plot|compare`; board lock for shared measurements
+- [ ] Full SAM stack on the Nano (`launch/launch.py module:=parking`, Kilted native + container): first runs
+      found undeclared launch dependencies (topic_tools, foxglove_bridge, rplidar_ros, mavros; F52), now added by
+      `jxb-rosdeps`; sysroots rebuilt, runs pending. Kernel trace of the stack waits for root on the board
+
 ### Phase 2: Fleet and tracing
 - [ ] `orin-agent` v0 (health, deploy, run, logs, trace) + CLI on top
 - [ ] Multi-board deploy and concurrent debugging with ≥2 boards
@@ -232,13 +279,17 @@ Implementation notes and every pitfall found on the way: [docs/findings.md](docs
 - [ ] Profiles per distro and mode (Jazzy/Kilted native, Lyrical container, Lyrical source); switch = new host
       image + sysroot + bundle. Done for the build side: `jp721-jazzy`, `jp721-kilted`, `jp721-lyrical` (2026-11-02)
 - [ ] Lyrical mode (b): native Lyrical on 24.04 from NVIDIA's Isaac ROS Buildfarm (`jp721-lyrical-isaac`, build side
-      done 2026-11-02, tests 13/13); install on the Nano needs approval; compare RAM/disk with mode (a)
+      done 2026-11-02, tests 13/13); runs on the Nano without installing anything (shipped runtime, F44);
+      compare RAM/disk with mode (a)
 - [ ] Document the supported matrix (L4T × Ubuntu × ROS)
 
-### Phase 5: JetsonPlanner
-- [ ] C++/Qt 6 prototype: inventory + telemetry for N boards
-- [ ] Flashing, deploy, trace browser
-- [ ] Merge with xbuild (shared agent, profiles, build backend)
+### Phase 5: JetsonPlanner (postponed, separate project)
+JetsonPlanner (C++/Qt 6) is developed as its own repository later. This project stays integrable:
+- every `jxb` operation is a non-interactive command with machine-readable output (`--json`), so the GUI can drive
+  it as a backend before the agent exists;
+- profiles (`profiles/*.toml`), board inventory (`boards.toml`) and artifacts (`traces/`, sysroot `.jxb/` metadata)
+  are the shared data model, documented as such;
+- the target-side `orin-agent` API (Phase 2) is defined once (protobuf) and used by both `jxb` and JetsonPlanner.
 
 ### Bonus (when the core phases are done)
 - [ ] W8 remote GUI: check the Nano's desktop session (Wayland/Xorg); `board gui` for single windows over SSH;

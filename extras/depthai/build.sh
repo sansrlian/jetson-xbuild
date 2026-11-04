@@ -33,6 +33,11 @@ set(VCPKG_CRT_LINKAGE dynamic)
 set(VCPKG_LIBRARY_LINKAGE static)
 set(VCPKG_CMAKE_SYSTEM_NAME Linux)
 set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE "$JXB_TOOLCHAIN_FILE")
+# vcpkg's own linux toolchain adds -fPIC; with the jxb toolchain chainloaded instead, set it here, since the static
+# port libraries end up in libdepthai-core.so.
+set(VCPKG_C_FLAGS "-fPIC")
+set(VCPKG_CXX_FLAGS "-fPIC")
+set(VCPKG_CMAKE_CONFIGURE_OPTIONS -DCMAKE_POSITION_INDEPENDENT_CODE=ON)
 set(VCPKG_ENV_PASSTHROUGH ARM64_SYSROOT ROS_DISTRO JXB_PROFILE JXB_HOME JXB_CPU_FLAGS JXB_CUDA_VERSION JXB_CUDA_ARCH
     JXB_CUDA_TARGET JXB_PYTHON_VERSION)
 EOF

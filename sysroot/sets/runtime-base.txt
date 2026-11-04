@@ -1,0 +1,21 @@
+# Userland of the board runtime container (`jxb --mode container ...`, and the Lyrical profile always): apt never
+# pulls Essential packages as dependencies, so the dev closure has no shell. One package per line.
+base-files
+base-passwd
+bash
+coreutils
+dash
+debianutils
+diffutils
+findutils
+grep
+gzip
+hostname
+libc-bin
+mawk
+ncurses-base
+procps
+sed
+sensible-utils
+tar
+util-linux

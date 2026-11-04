@@ -51,7 +51,7 @@ Package: libopencv-dev
 Pin: origin "ports.ubuntu.com"
 Pin-Priority: 700
 """
-package_sets = ["base-dev", "jetpack-7.2.1-dev", "l4t-driver", "ros-dev"]
+package_sets = ["base-dev", "runtime-base", "jetpack-7.2.1-dev", "l4t-driver", "ros-dev"]
 extras = ["onnxruntime", "cvcuda", "acados"]
 
 [container]

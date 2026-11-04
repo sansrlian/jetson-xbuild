@@ -8,11 +8,32 @@ set (a distro built for another Ubuntu, e.g. Lyrical for noble from NVIDIA's Isa
 resolve are retried there and accepted only if they map to ros-<distro>-* packages. Keys that resolve to pip are
 reported, not written; keys that don't resolve at all are an error (exit 1), since the sysroot would silently lack
 them. The set is picked up by `jxb sysroot build` via jxb.toml [sysroot] extra_sets.
+
+Packages that launch files start or include count too (`package="..."` in Python launch files, `pkg="..."` in XML
+ones, `get_package_share_directory("...")`, `FindPackageShare("...")`): workspaces often forget their
+exec_depends (e.g. topic_tools for throttle nodes, foxglove_bridge), which stays unnoticed on a dev machine with a
+full ROS install but breaks a board runtime made from the sysroot. GUI tools are left out.
 """
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
+
+LAUNCH_PKG = re.compile(r"""\b(?:package|pkg)\s*=\s*["']([A-Za-z][A-Za-z0-9_]*)["']"""
+                        r"""|(?:get_package_share_directory|FindPackageShare)\(\s*["']([A-Za-z][A-Za-z0-9_]*)["']""")
+# not for the board: GUI tools and simulators (the Gazebo stack alone would add GBs to every sysroot)
+GUI_ONLY = {"rviz2", "rqt_gui", "rqt_graph", "rqt_plot", "rqt_console", "rqt_reconfigure", "plotjuggler",
+            "ros_gz_sim", "ros_gz_bridge", "ros_gz_image", "gazebo_ros", "gz_ros2_control"}
+
+
+def launch_packages(ws: Path) -> set[str]:
+    """Packages started by the workspace's launch files that are not part of the workspace itself."""
+    own = {p.parent.name for p in (ws / "src").glob("**/package.xml")}
+    files = [f for d in (ws / "src", ws / "launch") if d.is_dir() for f in d.glob("**/*")
+             if f.suffix in (".py", ".xml") and ("launch" in f.parts or f.name.endswith((".launch.py", ".launch.xml")))]
+    found = {a or b for f in files for a, b in LAUNCH_PKG.findall(f.read_text(errors="replace"))}
+    return found - own - GUI_ONLY
 
 
 def main() -> int:
@@ -25,6 +46,10 @@ def main() -> int:
     subprocess.run(["rosdep", "update", "--rosdistro", distro], check=True, stdout=subprocess.DEVNULL)
     keys = subprocess.run(["rosdep", "keys", "--from-paths", str(ws / "src"), "--ignore-src", "-i",
                            "--rosdistro", distro], check=True, capture_output=True, text=True).stdout.split()
+    from_launch = sorted(launch_packages(ws) - set(keys))
+    if from_launch:
+        print(f"started by launch files but not declared in package.xml: {' '.join(from_launch)}")
+        keys += from_launch
     apt, other, missing = set(), {}, []
     for key in sorted(set(keys)):
         res = subprocess.run(["rosdep", "resolve", key, os_arg, "--rosdistro", distro],

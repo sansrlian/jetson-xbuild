@@ -31,7 +31,7 @@ sources = [
 ]
 # rosdistro lists Lyrical only for Ubuntu 26.04; ROS package keys are resolved there (same package names on noble).
 rosdep_fallback_codename = "resolute"
-package_sets = ["base-dev", "jetpack-7.2.1-dev", "l4t-driver", "ros-dev", "isaac-ros-5"]
+package_sets = ["base-dev", "runtime-base", "jetpack-7.2.1-dev", "l4t-driver", "ros-dev", "isaac-ros-5", "depthai-deps"]
 # CV-CUDA comes from the Isaac ROS repo here (0.14, what the board gets with Isaac ROS), not the GitHub 0.16 debs.
 extras = ["onnxruntime", "acados", "depthai"]
 

@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Rewrite absolute DT_NEEDED entries of cross-built ELF files to the library's file name.
+
+A shared library without DT_SONAME (common for ROS 2 libraries, e.g. Isaac ROS nodes and typesupport libraries
+exported as plain paths) that is linked by its full path is recorded with that path: <sysroot>/opt/ros/... on the
+build host, which doesn't exist on the board. The file name is a suffix of the same string in .dynstr, so only the
+entry's string offset changes; version-needs entries (vn_file) naming the same library are rewritten likewise,
+since the loader matches them against the name it loaded the library by.
+
+  jxb-fix-needed PATH...      (ELF files or directories; prints each rewritten entry)
+"""
+from __future__ import annotations
+
+import struct
+import sys
+from pathlib import Path
+
+PT_LOAD, PT_DYNAMIC = 1, 2
+DT_NULL, DT_NEEDED, DT_STRTAB, DT_VERNEED, DT_VERNEEDNUM = 0, 1, 5, 0x6FFFFFFE, 0x6FFFFFFF
+
+
+def fix(path: Path) -> list[str]:
+    data = bytearray(path.read_bytes())
+    if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:   # 64-bit little-endian only (aarch64)
+        return []
+    phoff, = struct.unpack_from("<Q", data, 0x20)
+    phentsize, phnum = struct.unpack_from("<HH", data, 0x36)
+    loads, dynamic = [], None
+    for i in range(phnum):
+        p_type, _, p_offset, p_vaddr, _, p_filesz, _, _ = struct.unpack_from("<IIQQQQQQ", data, phoff + i * phentsize)
+        if p_type == PT_LOAD:
+            loads.append((p_vaddr, p_offset, p_filesz))
+        elif p_type == PT_DYNAMIC:
+            dynamic = (p_offset, p_filesz)
+    if dynamic is None:
+        return []
+
+    def file_offset(vaddr: int) -> int:
+        for v, o, size in loads:
+            if v <= vaddr < v + size:
+                return vaddr - v + o
+        raise ValueError(f"{path}: address {vaddr:#x} is not in a loaded segment")
+
+    entries, tags = [], {}
+    for at in range(dynamic[0], dynamic[0] + dynamic[1], 16):
+        tag, val = struct.unpack_from("<qQ", data, at)
+        if tag == DT_NULL:
+            break
+        entries.append((at, tag, val))
+        tags.setdefault(tag, val)
+    if DT_STRTAB not in tags:
+        return []
+    strtab = file_offset(tags[DT_STRTAB])
+    changed = []
+
+    def rewrite(at: int, fmt: str, offset: int) -> None:
+        name = data[strtab + offset:data.index(0, strtab + offset)].decode()
+        if name.startswith("/"):
+            struct.pack_into(fmt, data, at, offset + name.rindex("/") + 1)
+            changed.append(name)
+
+    for at, tag, val in entries:
+        if tag == DT_NEEDED:
+            rewrite(at + 8, "<Q", val)
+    if DT_VERNEED in tags:
+        at = file_offset(tags[DT_VERNEED])
+        for _ in range(tags.get(DT_VERNEEDNUM, 0)):
+            _, _, vn_file, _, vn_next = struct.unpack_from("<HHIII", data, at)
+            rewrite(at + 4, "<I", vn_file)
+            if not vn_next:
+                break
+            at += vn_next
+    if changed:
+        path.write_bytes(data)
+    return changed
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    for root in map(Path, sys.argv[1:]):
+        for p in ([root] if root.is_file() else sorted(root.rglob("*"))):
+            if p.is_file() and not p.is_symlink():
+                for name in dict.fromkeys(fix(p)):
+                    print(f"jxb-fix-needed: {p}: {name} -> {name.rsplit('/', 1)[1]}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

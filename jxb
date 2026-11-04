@@ -5,7 +5,7 @@ Builds the xbuild image and the sysroot of a profile, runs a long-lived dev cont
 at their host paths (so compile_commands.json, debug info and clangd work on host and in the container alike),
 cross-builds ROS 2 workspaces and talks to boards over SSH (keys only).
 
-  jxb image build                     build the xbuild image of the profile
+  jxb image build | runtime           build the xbuild image / the board runtime image (--mode container)
   jxb sysroot build [--add PKG ...]   build the profile's sysroot from the board's apt repos (no emulation)
   jxb up [-w DIR ...] | down          create/remove the dev container (workspaces mounted read-write)
   jxb shell | exec -- CMD ...         shell / command in the container (current directory kept if mounted)
@@ -14,24 +14,42 @@ cross-builds ROS 2 workspaces and talks to boards over SSH (keys only).
   jxb board list | check NAME         inventory; compare a board's packages with the sysroot
   jxb deploy NAME [--ws DIR]          rsync install-<profile>/ to the board
   jxb run NAME -- CMD ...             run CMD on the board with ROS and the deployed install sourced
+  jxb launch NAME [--monitor] [--bag] [--with CMD] [--duration S] -- PKG FILE | LAUNCH_FILE [ARGS]
+                                      deploy + ros2 launch on the board, optionally recorded (traces/<board>/...)
+  jxb ssh NAME                        interactive shell on the board, same environment as run
+  jxb debug NAME --pkg P --exe E      gdbserver on the board (SSH-tunnelled) + cross gdb with sysroot and local
+        [--launch PKG FILE]           symbols; --launch starts E through a launch file (launch-prefix filter)
+  jxb gdb [-- GDB ARGS]               cross gdb for the profile (VS Code: toolchain/bin/jxb-gdb)
+  jxb trace nsys|tegrastats|kernel NAME [options] [-- CMD ...]
+                                      Nsight Systems / tegrastats / ftrace on the board -> traces/<board>/...
+  jxb trace report [DIR|BOARD|latest] | list   analysis of a recording (summary.json) / recordings
+  jxb vscode init [-w DIR]            VS Code tasks + debug configurations (build, deploy, run, debug, trace)
 
-Global options: --profile NAME (default from jxb.toml or the only profile), --dry-run.
+Global options: --profile NAME (default from jxb.toml or the only profile), --dry-run,
+  --mode auto|native|container (board commands natively or in the profile's runtime container; auto: container
+  only when the profile's Ubuntu release differs from the board's).
 Local config (gitignored): jxb.toml (defaults), boards.toml (inventory, see boards.example.toml).
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO / "toolchain"))
 from jxb_profile import load_profile  # noqa: E402
+import jxb_trace  # noqa: E402
+import jxb_vscode  # noqa: E402
+import jxb_launch  # noqa: E402
 
 DRY_RUN = False
 
@@ -78,6 +96,12 @@ class Profile:
         self.cuda = self.data["image"]["cuda_version"]
         self.cuda_target = self.data["sysroot"].get("cuda_target", "sbsa-linux")
         self.distro = self.data["board"]["ros_distro"]
+        self.mode = local.get("mode", "auto")   # where board commands run (--mode), see uses_container()
+
+    def workspace(self, ws: Path) -> dict:
+        """jxb.toml [workspace.<dir name>]: `files` of the source tree to deploy (launch files that include others
+        from src/, configs, models), `env` for the board (any mode) and `container_env` (container mode)."""
+        return self.local.get("workspace", {}).get(ws.name, {})
 
 
 def docker_state(name: str) -> str:
@@ -93,6 +117,9 @@ def container_mounts(name: str) -> list[Path]:
 
 # ------------------------------------------------------------------------------------- image/sysroot
 def cmd_image(p: Profile, a) -> None:
+    if a.action == "runtime":   # the board's runtime image (--mode container), built here, loaded on first use
+        info(f"runtime image ready: {build_runtime_image(p)}")
+        return
     i = p.data["image"]
     sh(["docker", "build", "-f", str(REPO / i["dockerfile"]), "-t", p.image,
         "--build-arg", f"UBUNTU={i.get('ubuntu', '24.04')}",
@@ -240,11 +267,15 @@ def cmd_test(p: Profile, a) -> None:
         sys.exit(rc)
     if a.board:
         board = Board(a.board, p)
+        prepare_board(p, board)
         dest = f"{board.base}/tests"
         info(f"copying tests to {board.name}:{dest}")
         board.ssh(f"mkdir -p {shlex.quote(dest)}")
         board.rsync(f"{out}/stage/", dest)
-        sys.exit(board.ssh(f"ROS_DISTRO={p.distro} bash {shlex.quote(dest)}/run_on_board.sh", tty=False, check=False))
+        env = board_ros_setup(p, board) + board_runtime_libs(p, board)
+        ensure_board_libs(p, board, env + f"export LD_LIBRARY_PATH={dest}/lib:$LD_LIBRARY_PATH && ", [dest])
+        script = env + f"ROS_DISTRO={p.distro} bash {shlex.quote(dest)}/run_on_board.sh"
+        sys.exit(board.ssh(board_exec(p, board, script, login=False), tty=False, check=False))
 
 
 # --------------------------------------------------------------------------------------------- boards
@@ -272,9 +303,18 @@ class Board:
             fail(f"remote command failed ({res.returncode}) on {self.name}")
         return res.stdout if capture else res.returncode
 
-    def rsync(self, src: str, dest: str, delete: bool = True) -> None:
+    def rsync(self, src: str, dest: str, delete: bool = True, exclude: tuple[str, ...] = (),
+              filters: list[str] | None = None) -> None:
+        """filters: rsync --include/--exclude rules, in order (applied after `exclude`)."""
         e = shlex.join(["ssh", *self.ssh_opts])
-        sh(["rsync", "-az", *(["--delete"] if delete else []), "-e", e, src, f"{self.target}:{dest}"])
+        sh(["rsync", "-az", *(["--delete"] if delete else []), *(f"--exclude={x}" for x in exclude),
+            *(filters or []), "-e", e, src, f"{self.target}:{dest}"])
+
+    def codename(self) -> str:
+        """The board's Ubuntu release (boards.toml `codename`, else asked once)."""
+        if "codename" not in self.cfg:
+            self.cfg["codename"] = str(self.ssh(". /etc/os-release; echo $VERSION_CODENAME", capture=True)).strip()
+        return self.cfg["codename"]
 
 
 def cmd_board(p: Profile, a) -> None:
@@ -310,33 +350,412 @@ def runtime_paths(p: Profile) -> list[str]:
     return [r for r in p.data.get("deploy", {}).get("runtime", []) if (p.sysroot / r.lstrip("/")).is_dir()]
 
 
-def cmd_deploy(p: Profile, a) -> None:
-    board = Board(a.name, p)
-    ws = Path(a.ws or Path.cwd()).resolve()
+def ship_ros(p: Profile, board: Board) -> None:
+    """A ROS distro the board doesn't have (it keeps its stock JetPack, apt is not touched): the sysroot's
+    /opt/ros/<distro> is relocatable and runs from <base>/runtime/opt/ros/<distro> on the same Ubuntu release.
+    Headers and static libraries stay behind."""
+    ros = f"/opt/ros/{p.distro}"
+    if board.ssh(f"test -f {ros}/setup.bash", check=False) == 0:
+        return
+    codename = p.data["sysroot"].get("codename", "noble")
+    if board.codename() != codename:
+        fail(f"{p.name} is built for Ubuntu {codename}, {board.name} runs {board.codename()}: "
+             "its binaries need that userland (--mode container)")
+    dest = f"{board.base}/runtime{ros}"
+    board.ssh(f"mkdir -p {shlex.quote(dest)}")
+    info(f"{board.name} has no ROS {p.distro}: shipping the sysroot's {ros} -> {dest}")
+    board.rsync(f"{p.sysroot / ros.lstrip('/')}/", dest, exclude=("/include/", "*.a"))
+    ship_pydist(p, board)
+
+
+def ship_pydist(p: Profile, board: Board) -> None:
+    """System Python modules the shipped distro uses but the board's Python can't import (e.g. osrf_pycommon,
+    which the board has only as its own distro's ros-<distro>-osrf-pycommon), to <base>/runtime/pydist."""
+    src = p.sysroot / "usr/lib/python3/dist-packages"
+    ours = {e.name.split(".")[0] for e in src.iterdir()
+            if not e.name.endswith((".dist-info", ".egg-info", ".pth")) and not e.name.startswith("_")}
+    have = set(str(board.ssh("python3 -c 'import pkgutil; print(\"\\n\".join(m.name for m in pkgutil.iter_modules()))'",
+                             capture=True)).split())
+    missing = sorted(ours - have)
+    if not missing:
+        return
+    entries = [e.name for e in src.iterdir()
+               if e.name.split(".")[0] in missing or e.name.split("-")[0].replace("-", "_") in missing]
+    info(f"shipping {len(missing)} Python module(s) {board.name}'s Python lacks: {', '.join(missing[:8])}"
+         + (" ..." if len(missing) > 8 else ""))
+    dest = f"{board.base}/runtime/pydist"
+    board.ssh(f"mkdir -p {shlex.quote(dest)}")
+    board.rsync(f"{src}/", dest, delete=False,
+                filters=[*(f"--include=/{e}/***" if (src / e).is_dir() else f"--include=/{e}" for e in entries),
+                         "--exclude=*"])
+
+
+# ---------------------------------------------------------------------------- runtime container on the board
+# Profiles built for another Ubuntu release than the board's (Lyrical on 26.04) run in a container whose root is
+# the profile's sysroot, minus what only builds need. arm64 image built on the host without emulation (docker
+# import), GPU through the board's CDI spec. Orin's TensorRT loads only the sm86 builder resource.
+RUNTIME_IMAGE_EXCLUDES = (
+    "./usr/include", "./opt/ros/*/include", "./usr/local/cuda-*/targets/*/include", "./usr/local/cuda-*/nvvm",
+    "./usr/local/cuda-*/bin", "*.a", "./usr/share/doc", "./usr/share/man", "./usr/share/info", "./usr/src",
+    "./var/cache", "./var/lib/apt/lists",
+    *(f"./usr/lib/aarch64-linux-gnu/libnvinfer_builder_resource_{a}.*"
+      for a in ("ptx", "sm75", "sm80", "sm89", "sm90", "sm100", "sm110", "sm120")))
+
+
+def uses_container(p: Profile, board: Board) -> bool:
+    """--mode native|container (or jxb.toml mode); auto: [deploy] container = true/false, else whenever the
+    profile's Ubuntu release is not the board's."""
+    if p.mode != "auto":
+        return p.mode == "container"
+    explicit = p.data.get("deploy", {}).get("container")
+    if explicit is not None:
+        return bool(explicit)
+    return p.data["sysroot"].get("codename", "noble") != board.codename()
+
+
+def runtime_image(p: Profile) -> tuple[str, str]:
+    """Tag of the profile's runtime image and the sysroot build it must come from."""
+    return f"jxb-rt:{p.name}", json.loads((p.sysroot / ".jxb/info.json").read_text())["built"]
+
+
+RUNTIME_LABEL = '{{index .Config.Labels "jxb.sysroot.built"}}'
+
+
+def build_runtime_image(p: Profile) -> str:
+    """The profile's runtime image on this host, (re)built when the sysroot build changed."""
+    tag, built = runtime_image(p)
+    local = subprocess.run(["docker", "image", "inspect", "-f", RUNTIME_LABEL, tag], capture_output=True, text=True)
+    if local.stdout.strip() != built:
+        if not (p.sysroot / "usr/bin/bash").exists():
+            fail(f"{p.sysroot} has no shell for a container: rebuild it with the runtime-base package set "
+                 "(jxb sysroot build)")
+        info(f"building {tag}: arm64 runtime image from {p.sysroot}")
+        tar = subprocess.Popen(["tar", "-C", str(p.sysroot), "-c", "--numeric-owner",
+                                *(f"--exclude={x}" for x in RUNTIME_IMAGE_EXCLUDES), "."], stdout=subprocess.PIPE)
+        sh(["docker", "import", "--platform", "linux/arm64", "--change", f"LABEL jxb.profile={p.name}",
+            "--change", f"LABEL jxb.sysroot.built={built}", "--change", 'CMD ["bash"]', "-", tag],
+           stdin=tar.stdout, stdout=subprocess.DEVNULL)
+        if tar.wait() != 0:
+            fail(f"tar of {p.sysroot} failed")
+    return tag
+
+
+def ensure_runtime_image(p: Profile, board: Board) -> None:
+    """The board has the runtime image of the current sysroot build (built and loaded only when it changed)."""
+    tag, built = runtime_image(p)
+    on_board = str(board.ssh(f"docker image inspect -f '{RUNTIME_LABEL}' {tag} 2>/dev/null; true",
+                             capture=True)).strip()
+    if on_board == built:
+        return
+    build_runtime_image(p)
+    info(f"loading {tag} on {board.name} (once per sysroot build; several GB)")
+    old = str(board.ssh(f"docker image inspect -f '{{{{.Id}}}}' {tag} 2>/dev/null; true", capture=True)).strip()
+    save = subprocess.Popen(["docker", "save", tag], stdout=subprocess.PIPE)
+    zstd = subprocess.Popen(["zstd", "-T0", "-3", "-q"], stdin=save.stdout, stdout=subprocess.PIPE)
+    sh(["ssh", *board.ssh_opts, board.target, "zstd -d -q | docker load"], stdin=zstd.stdout)
+    if old:   # the previous build is untagged now
+        board.ssh(f"docker rmi {old} >/dev/null 2>&1; true")
+
+
+def prepare_board(p: Profile, board: Board) -> None:
+    """What the profile's binaries need on the board besides the deployment: its ROS distro or its runtime image."""
+    if uses_container(p, board):
+        ensure_runtime_image(p, board)
+    else:
+        ship_ros(p, board)
+
+
+def board_exec(p: Profile, board: Board, script: str, login: bool = True, tty: bool = False,
+               name: str | None = None) -> str:
+    """Remote command (for Board.ssh) that runs the shell script on the board: in bash, or for container profiles
+    in the profile's runtime image with the GPU (CDI), host network/IPC (DDS) and <base> mounted at its path.
+    The board's gdbserver and Nsight Systems are mounted in when present; with tty, closing the connection stops
+    the container (docker forwards the hangup, --init passes it on)."""
+    shell = shlex.join(["bash", "-lc" if login else "-c", script])
+    if not uses_container(p, board):
+        return shell
+    base = board.base
+    optional = " ".join(f'$([ -e {path} ] && echo "-v {path}:{path}:ro")'
+                        for path in ("/usr/bin/gdbserver", "/opt/nvidia/nsight-systems"))
+    # GPU device nodes belong to video/render; by number, the image (the sysroot) has no such group names
+    groups = " ".join(f'$(getent group {g} | cut -d: -f3 | sed "s/^/--group-add /")' for g in ("video", "render"))
+    return (f"docker run --rm --init -i{'t' if tty else ''} {f'--name {name} ' if name else ''}"
+            "--network host --ipc host --device nvidia.com/gpu=all "
+            f"--user $(id -u):$(id -g) {groups} -e HOME={base} -v {base}:{base} -w {base} {optional} "
+            f"{runtime_image(p)[0]} {shell}")
+
+
+# Prints "HAVE <file name>" for the libraries below the given directories and "MISSING <soname>" for every library
+# that ldd cannot resolve for their ELF files.
+MISSING_LIBS_SH = r"""find "$@" \( -type f -o -type l \) -name '*.so*' -printf 'HAVE %f\n' 2>/dev/null
+find "$@" -type f \( -name '*.so' -o -name '*.so.*' -o -perm -u+x \) -print0 2>/dev/null |
+  xargs -0 -r -P4 -n 50 sh -c 'for f; do
+    [ "$(head -c4 "$f" 2>/dev/null | tr -d "\177")" = ELF ] || continue
+    ldd "$f" 2>/dev/null | awk "/not found/ {print \"MISSING \" \$1}"
+  done' sh | sort -u"""
+
+
+def ensure_board_libs(p: Profile, board: Board, env: str, dirs: list[str]) -> None:
+    """Ship the sysroot's copy of every shared library the deployed files need but the board lacks (dependencies of
+    a shipped ROS distro, of jxb's extras, ...) to <base>/runtime/syslibs, until ldd resolves everything."""
+    stage = REPO / ".work/deploy" / p.name / board.name / "syslibs"
+    search = ["/usr/lib/aarch64-linux-gnu", "/lib/aarch64-linux-gnu", f"/opt/ros/{p.distro}/lib",
+              *runtime_paths(p)]
+    for conf in sorted((p.sysroot / "etc/ld.so.conf.d").glob("*.conf")):
+        search += [l.strip() for l in conf.read_text().splitlines() if l.startswith("/")]
+    shipped: set[str] = set()
+    check = env + f"set -- {' '.join(map(shlex.quote, dirs))}; " + MISSING_LIBS_SH
+    for _ in range(5):   # shipped libraries may need further ones
+        out = board.ssh(board_exec(p, board, check, login=False), capture=True)
+        words = str(out).split()
+        have = {name for kind, name in zip(words[::2], words[1::2]) if kind == "HAVE"}
+        # Libraries of the deployment itself are found through its setup scripts at run time.
+        missing = [name for kind, name in zip(words[::2], words[1::2])
+                   if kind == "MISSING" and name not in have and name not in shipped]
+        if not missing:
+            return
+        stage.mkdir(parents=True, exist_ok=True)
+        unresolved = []
+        for soname in missing:
+            src = next((p.sysroot / d.lstrip("/") / soname for d in search
+                        if (p.sysroot / d.lstrip("/") / soname).exists()), None)
+            if src is None:
+                unresolved.append(soname)
+                continue
+            shutil.copy2(src.resolve(), stage / soname)
+            shipped.add(soname)
+        if unresolved:
+            fail(f"libraries missing on {board.name} and not in the sysroot: {', '.join(unresolved)}")
+        info(f"shipping {len(missing)} librar{'y' if len(missing) == 1 else 'ies'} {board.name} lacks: "
+             f"{', '.join(missing[:6])}{' ...' if len(missing) > 6 else ''}")
+        board.ssh(f"mkdir -p {board.base}/runtime/syslibs")
+        board.rsync(f"{stage}/", f"{board.base}/runtime/syslibs", delete=False)
+    fail(f"could not resolve the libraries of {', '.join(dirs)} on {board.name}")
+
+
+# Source-tree files deployed next to install/ by default (when present): launch files that include other launch
+# files by path ($WORKSPACE_ROOT/src/...), their configs, and assets such as models. jxb.toml can replace the list.
+WORKSPACE_FILES = ("launch/", "assets/", "src/*/launch/", "src/*/config/", "src/*/params/", "src/*/urdf/")
+
+
+def incomplete_packages(install: Path) -> list[str]:
+    """Packages whose colcon hooks (share/<pkg>/package.dsv) name files that aren't there: a failed or aborted build
+    leaves such a directory, and sourcing the workspace's local_setup on the board would stop at it."""
+    bad = []
+    for dsv in sorted(install.glob("*/share/*/package.dsv")):
+        pkg = dsv.parts[-4]
+        # only the hooks bash uses (colcon lists every shell's, e.g. .ps1, which Linux installs never have)
+        hooks = [line.split(";", 1)[1] for line in dsv.read_text().splitlines()
+                 if line.startswith("source;") and line.endswith((".sh", ".bash", ".dsv"))]
+        if any(not (install / pkg / h).exists() for h in hooks):
+            bad.append(pkg)
+    return bad
+
+
+def deploy_workspace(p: Profile, board: Board, ws: Path, packages: list[str] | None = None,
+                     files: bool = True) -> None:
+    """install-<profile>/ (or only some of its packages) and the workspace's run-time files to <base>/<ws>/, plus
+    what the board lacks for the profile (its ROS distro, the runtime image, jxb's runtime extras, libraries)."""
     src = ws / f"install-{p.name}"
     if not src.is_dir():
         fail(f"{src} not found; build first (jxb build)")
-    dest = f"{board.base}/{ws.name}/install"
+    prepare_board(p, board)
+    root = f"{board.base}/{ws.name}"
+    dest = f"{root}/install"
     board.ssh(f"mkdir -p {shlex.quote(dest)}")
-    info(f"deploy {src} -> {board.name}:{dest}")
-    board.rsync(f"{src}/", dest)
+    broken = incomplete_packages(src)
+    if packages and set(packages) & set(broken):
+        fail(f"failed to build for {p.name}: {', '.join(sorted(set(packages) & set(broken)))}")
+    if broken:   # not deployed, and stale copies removed: the workspace's setup must stay sourceable
+        info(f"not deploying incomplete packages (failed builds): {', '.join(broken)}")
+        board.ssh(f"cd {shlex.quote(dest)} && rm -rf {' '.join(map(shlex.quote, broken))}")
+    skip = [f"--exclude=/{pkg}/" for pkg in broken]
+    if packages:
+        unknown = [pkg for pkg in packages if not (src / pkg).is_dir()]
+        if unknown:
+            fail(f"not built for {p.name}: {', '.join(unknown)} (jxb build --packages-up-to ...)")
+        info(f"deploy {', '.join(packages)} -> {board.name}:{dest}")
+        # the packages' own trees plus colcon's top-level setup files; other deployed packages stay
+        keep = [f"--include=/{pkg}/***" for pkg in packages]
+        board.rsync(f"{src}/", dest, delete=False, filters=[*keep, "--include=/*.*", "--include=/_*", "--exclude=/*"])
+    else:
+        info(f"deploy {src} -> {board.name}:{dest}")
+        board.rsync(f"{src}/", dest, filters=skip)
+    patterns = p.workspace(ws).get("files", WORKSPACE_FILES) if files else []
+    present = [pat for pat in patterns if list(ws.glob(pat.rstrip("/")))]
+    if present:
+        info(f"deploy workspace files {' '.join(present)} -> {board.name}:{root}")
+        rules = [f"--include=/{pat}***" if pat.endswith("/") else f"--include=/{pat}" for pat in present]
+        prune = ["--exclude=/build*/", "--exclude=/install*/", "--exclude=/log/", "--exclude=/.*/"]
+        # Git LFS pointers (objects not pulled) must not replace the real files on the board
+        pointers = [f.relative_to(ws) for pat in present for f in ws.glob(pat.rstrip("/") + "/**/*")
+                    if f.is_file() and f.stat().st_size < 1024
+                    and f.read_bytes()[:40].startswith(b"version https://git-lfs.github.com/spec/")]
+        for ptr in pointers:
+            info(f"skipping {ptr}: Git LFS pointer, the file itself is not here (git lfs pull)")
+        prune += [f"--exclude=/{ptr}" for ptr in pointers]
+        board.rsync(f"{ws}/", root, delete=False,
+                    filters=[*prune, "--include=*/", *rules, "--exclude=*", "--prune-empty-dirs"])
     # Runtime extras go next to the deployment, never into the board's own /opt (shared boards stay untouched).
     for r in runtime_paths(p):
         rdest = f"{board.base}/runtime{r}"
         board.ssh(f"mkdir -p {shlex.quote(rdest)}")
         info(f"deploy runtime {r} -> {board.name}:{rdest}")
         board.rsync(f"{p.sysroot / r.lstrip('/')}/", rdest)
+    ensure_board_libs(p, board, board_env_script(p, board, ws), [dest, f"{board.base}/runtime"])
+
+
+def cmd_deploy(p: Profile, a) -> None:
+    deploy_workspace(p, Board(a.name, p), Path(a.ws or Path.cwd()).resolve(), a.packages, files=not a.no_files)
+
+
+def board_ros_setup(p: Profile, board: Board) -> str:
+    """Shell prefix that sources the board's ROS underlay, or the copy from ship_ros when the board has no such
+    distro; exports the setup script's path as JXB_ROS_SETUP."""
+    ros = f"/opt/ros/{p.distro}"
+    # Python modules shipped with the distro (ship_pydist), after everything else on the path; native only
+    pydist = "" if uses_container(p, board) else (
+        f"[ -d {board.base}/runtime/pydist ] && export PYTHONPATH=${{PYTHONPATH:+$PYTHONPATH:}}"
+        f"{board.base}/runtime/pydist; ")
+    return (f"set +u; {pydist}export JXB_ROS_SETUP={ros}/setup.bash; [ -f $JXB_ROS_SETUP ] || "
+            f"JXB_ROS_SETUP={board.base}/runtime{ros}/setup.bash; source $JXB_ROS_SETUP && ")
+
+
+def board_runtime_libs(p: Profile, board: Board) -> str:
+    """Shell prefix that puts jxb's runtime extras and shipped system libraries on LD_LIBRARY_PATH."""
+    libs = [f"{board.base}/runtime{r}/lib" for r in runtime_paths(p)] + [f"{board.base}/runtime/syslibs"]
+    return f"export LD_LIBRARY_PATH={':'.join(libs)}:$LD_LIBRARY_PATH && "
+
+
+def board_launch_args(board: "Board", ws: Path, args: list[str]) -> list[str]:
+    """Launch target and arguments for the board: an empty package (unset VS Code setting) dropped, launch files of
+    the workspace (e.g. launch/launch.py) mapped to their deployed copies."""
+    out = []
+    for arg in args:
+        if not arg:
+            continue
+        if not arg.startswith("-") and ":=" not in arg and (ws / arg).is_file():
+            arg = f"{board.base}/{ws.name}/{arg}"
+        out.append(arg)
+    return out
+
+
+def board_ws_env(p: Profile, board: "Board", ws: Path) -> str:
+    """Shell prefix with the workspace's environment on the board: WORKSPACE_ROOT (the deployed workspace, where
+    launch files find src/ and assets/) and jxb.toml's env / container_env ({ws} = that directory)."""
+    root = f"{board.base}/{ws.name}"
+    cfg = p.workspace(ws)
+    env = {"WORKSPACE_ROOT": root, **cfg.get("env", {}),
+           **(cfg.get("container_env", {}) if uses_container(p, board) else {})}
+    return "".join(f"export {k}={shlex.quote(str(v).replace('{ws}', root))} && " for k, v in env.items())
+
+
+def board_env_script(p: Profile, board: "Board", ws: Path) -> str:
+    """Shell prefix that gives a remote command the ROS underlay, the deployed install and jxb's runtime extras."""
+    # local_setup: the underlay is sourced explicitly (it may not be the /opt/ros path recorded at build time)
+    setup = f"{board.base}/{ws.name}/install/local_setup.bash"
+    return (board_ros_setup(p, board) + f"if [ -f {setup} ]; then source {setup}; fi && "
+            + board_runtime_libs(p, board) + board_ws_env(p, board, ws))
 
 
 def cmd_run(p: Profile, a) -> None:
     board = Board(a.name, p)
     ws = Path(a.ws or Path.cwd()).resolve()
-    setup = f"{board.base}/{ws.name}/install/setup.bash"
-    libs = ":".join(f"{board.base}/runtime{r}/lib" for r in runtime_paths(p))
-    script = (f"source /opt/ros/{p.distro}/setup.bash && "
-              f"if [ -f {setup} ]; then source {setup}; fi && "
-              f"export LD_LIBRARY_PATH={libs + ':' if libs else ''}$LD_LIBRARY_PATH && " + shlex.join(a.cmd))
-    sys.exit(board.ssh(f"bash -lc {shlex.quote(script)}", tty=sys.stdout.isatty(), check=False))
+    script = board_env_script(p, board, ws) + shlex.join(a.cmd)
+    tty = sys.stdout.isatty()
+    sys.exit(board.ssh(board_exec(p, board, script, tty=tty), tty=tty, check=False))
+
+
+def gdb_init(p: Profile, install: Path) -> list[str]:
+    """gdb commands for a cross session: board libraries from the sysroot, workspace and runtime libraries by name."""
+    libdirs = sorted({str(d) for d in install.glob("*/lib")} | {str(d) for d in install.glob("*/lib/*") if d.is_dir()})
+    libdirs += [str(p.sysroot / r.lstrip("/") / "lib") for r in runtime_paths(p)]
+    return ["set pagination off", "set debuginfod enabled off", "set breakpoint pending on",
+            f"set sysroot {p.sysroot}", f"set solib-search-path {':'.join(libdirs)}"]
+
+
+def cmd_debug(p: Profile, a) -> None:
+    """gdbserver on the board, gdb-multiarch in the container with the sysroot and the local (unstripped) binaries.
+
+    gdbserver listens on the board's loopback only and is reached through the SSH session that starts it
+    (local port forward), so nothing is exposed on the lab network and no firewall rule is needed.
+    With --launch, the node is started by its launch file and only the executable --exe runs under gdbserver."""
+    board = Board(a.name, p)
+    ws = Path(a.ws or Path.cwd()).resolve()
+    install = ws / f"install-{p.name}"
+    local = install / a.pkg / "lib" / a.pkg / a.exe
+    if not local.is_file():
+        fail(f"{local} not found (build and deploy first; use RelWithDebInfo/Debug for line info)")
+    remote = f"{board.base}/{ws.name}/install/{a.pkg}/lib/{a.pkg}/{a.exe}"
+    port = int(a.port or board.cfg.get("gdb_port", 3000))
+    gdbserver = ["gdbserver", "--once", f"127.0.0.1:{port}"]
+    if a.launch:
+        server = shlex.join(["exec", "ros2", "launch", *board_launch_args(board, ws, [*a.launch, *a.cmd]),
+                             "--launch-prefix", shlex.join(gdbserver),
+                             "--launch-prefix-filter", f"^{re.escape(a.exe)}$"])
+    else:
+        server = shlex.join(["exec", *gdbserver, remote, *a.cmd])
+    # -tt: with a terminal on the board, closing the connection hangs up everything it started (gdbserver, and with
+    # --launch the other nodes of the launch file), so nothing keeps running after the debug session.
+    ssh = ["ssh", *board.ssh_opts, "-tt", "-o", "ExitOnForwardFailure=yes", "-L", f"{port}:127.0.0.1:{port}",
+           board.target, board_exec(p, board, board_env_script(p, board, ws) + server, tty=True)]
+    if a.server_only:   # VS Code's preLaunchTask: gdbserver and the tunnel in the foreground, cppdbg is the client
+        info(f"gdbserver for {a.exe} on {board.name}, forwarded to 127.0.0.1:{port}")
+        sys.exit(sh(ssh, check=False).returncode)
+    # stdin stays with gdb: ssh must not read the terminal
+    proc = subprocess.Popen(ssh, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    for line in proc.stdout:   # wait until gdbserver listens
+        print(f"[board] {line.rstrip()}", flush=True)
+        if "Listening on port" in line:
+            break
+    else:
+        fail("gdbserver did not start on the board")
+    # Keep forwarding the program's output: an undrained pipe would block it once the buffer is full.
+    threading.Thread(target=lambda: [print(f"[board] {l.rstrip()}", flush=True) for l in proc.stdout],
+                     daemon=True).start()
+    gdb_args = ["-q", *(["--batch"] if a.batch else [])]
+    for cmd in [f"file {local}", f"target remote 127.0.0.1:{port}", *(a.gdb_cmd or [])]:
+        gdb_args += ["-ex", cmd]
+    rc = subprocess.run(gdb_command(p, ws, gdb_args)).returncode
+    proc.terminate()
+    sys.exit(rc)
+
+
+def host_gdb() -> str | None:
+    """A host gdb that can debug aarch64 (gdb-multiarch, or a gdb built with --enable-targets=all as on Arch)."""
+    for name in ("gdb-multiarch", "gdb"):
+        path = shutil.which(name)
+        if path and '"aarch64"' in subprocess.run([path, "-nx", "--batch", "-ex", "set architecture aarch64"],
+                                                  capture_output=True, text=True).stdout:
+            return path
+    return None
+
+
+def gdb_command(p: Profile, ws: Path, args: list[str]) -> list[str]:
+    """Cross gdb set up for the profile's sysroot and the workspace's install tree: the host's gdb if it supports
+    aarch64, else gdb-multiarch in the container (same paths there; stdin stays attached for MI clients)."""
+    init = [x for cmd in gdb_init(p, ws / f"install-{p.name}") for x in ("-iex", cmd)]
+    gdb = host_gdb()
+    if gdb:
+        return [gdb, *init, *args]
+    ensure_up(p)
+    tty = ["-t"] if sys.stdin.isatty() and sys.stdout.isatty() else []
+    return ["docker", "exec", "-i", *tty, "-w", str(ws), p.container, "gdb-multiarch", *init, *args]
+
+
+def cmd_gdb(p: Profile, a) -> None:
+    """Cross gdb for the profile (see gdb_command); VS Code's cppdbg runs it through toolchain/bin/jxb-gdb."""
+    cmd = gdb_command(p, Path(a.ws or Path.cwd()).resolve(), a.cmd)
+    os.execvp(cmd[0], cmd)
+
+
+def cmd_ssh(p: Profile, a) -> None:
+    """Interactive shell on the board with the ROS underlay, the deployed workspace and jxb's runtime sourced."""
+    board = Board(a.name, p)
+    ws = Path(a.ws or Path.cwd()).resolve()
+    script = board_env_script(p, board, ws) + "exec bash -i"
+    rc = board.ssh(board_exec(p, board, script, login=False, tty=True), tty=True, check=False)
+    sys.exit(rc)
 
 
 # ----------------------------------------------------------------------------------------------- main
@@ -344,9 +763,12 @@ def main() -> None:
     global DRY_RUN
     ap = argparse.ArgumentParser(prog="jxb", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--profile")
+    ap.add_argument("--mode", choices=["auto", "native", "container"],
+                    help="run on the board natively or in the profile's runtime container; auto (default, jxb.toml "
+                         "mode): container only when the profile's Ubuntu release differs from the board's")
     ap.add_argument("--dry-run", action="store_true")
     sub = ap.add_subparsers(dest="command", required=True)
-    s = sub.add_parser("image"); s.add_argument("action", choices=["build"]); s.set_defaults(fn=cmd_image)
+    s = sub.add_parser("image"); s.add_argument("action", choices=["build", "runtime"]); s.set_defaults(fn=cmd_image)
     s = sub.add_parser("sysroot"); s.add_argument("action", choices=["build", "info", "rosdeps"])
     s.add_argument("--add", nargs="*", default=[]); s.add_argument("--no-update", action="store_true")
     s.add_argument("-w", "--workspace")
@@ -360,20 +782,44 @@ def main() -> None:
     s = sub.add_parser("test"); s.add_argument("--board"); s.set_defaults(fn=cmd_test)
     s = sub.add_parser("board"); s.add_argument("action", choices=["list", "check"]); s.add_argument("name", nargs="?")
     s.set_defaults(fn=cmd_board)
-    s = sub.add_parser("deploy"); s.add_argument("name"); s.add_argument("--ws"); s.set_defaults(fn=cmd_deploy)
+    s = sub.add_parser("deploy"); s.add_argument("name"); s.add_argument("--ws")
+    s.add_argument("--packages", nargs="+", metavar="PKG", help="deploy only these packages of install-<profile>/")
+    s.add_argument("--no-files", action="store_true", help="skip the workspace's run-time files (launch/, assets/...)")
+    s.set_defaults(fn=cmd_deploy)
     s = sub.add_parser("run"); s.add_argument("name"); s.add_argument("--ws")
     s.set_defaults(fn=cmd_run, cmd=[])   # the command after "--" is split off before parsing
-    # build/exec/run pass everything after the subcommand (and the board name) through untouched; argparse
-    # would otherwise try to interpret colcon or remote options.
+    s = sub.add_parser("debug"); s.add_argument("name"); s.add_argument("--ws"); s.add_argument("--port", type=int)
+    s.add_argument("--pkg", required=True); s.add_argument("--exe", required=True)
+    s.add_argument("--launch", nargs=2, metavar=("PKG", "FILE"), help="start EXE through this launch file")
+    s.add_argument("--gdb-cmd", action="append", help="gdb command to run after connecting (repeatable)")
+    s.add_argument("--batch", action="store_true", help="non-interactive gdb (with --gdb-cmd)")
+    s.add_argument("--server-only", action="store_true", help="only start gdbserver (for VS Code's cppdbg)")
+    s.set_defaults(fn=cmd_debug, cmd=[])
+    s = sub.add_parser("gdb"); s.add_argument("--ws"); s.set_defaults(fn=cmd_gdb, cmd=[])
+    s = sub.add_parser("ssh"); s.add_argument("name"); s.add_argument("--ws"); s.set_defaults(fn=cmd_ssh)
+    jxb_trace.register(sub, sys.modules[__name__])
+    jxb_vscode.register(sub, sys.modules[__name__])
+    jxb_launch.register(sub, sys.modules[__name__])
+    # build/exec/run/debug/gdb pass everything after the subcommand (and the board name) through untouched;
+    # argparse would otherwise try to interpret colcon, remote or gdb options. jxb's own options come first.
+    own = {"run": {"--ws": 2}, "gdb": {"--ws": 2},
+           "debug": {"--ws": 2, "--port": 2, "--pkg": 2, "--exe": 2, "--gdb-cmd": 2, "--launch": 3, "--batch": 1,
+                     "--server-only": 1}}
     argv, passthrough = sys.argv[1:], None
     for i, tok in enumerate(argv):
-        if tok in ("build", "exec", "run"):
-            keep = i + (2 if tok == "run" else 1)
-            argv, passthrough = argv[:keep], argv[keep:]
-            while tok == "run" and passthrough[:1] == ["--ws"] and len(passthrough) > 1:
-                argv, passthrough = argv + passthrough[:2], passthrough[2:]   # jxb's own option
+        if tok in ("trace", "launch"):   # ... NAME [options] -- CMD: all of jxb's options come before "--"
+            if "--" in argv[i:]:
+                j = argv.index("--", i)
+                argv, passthrough = argv[:j], argv[j:]
             break
-        if not tok.startswith("-") and argv[i - 1:i] != ["--profile"]:
+        if tok in ("build", "exec", "run", "debug", "gdb"):
+            keep = i + (2 if tok in ("run", "debug") else 1)
+            argv, passthrough = argv[:keep], argv[keep:]
+            while passthrough[:1] and passthrough[0] in own.get(tok, {}):
+                n = own[tok][passthrough[0]]
+                argv, passthrough = argv + passthrough[:n], passthrough[n:]
+            break
+        if not tok.startswith("-") and argv[i - 1:i] not in (["--profile"], ["--mode"]):   # global option values
             break
     a = ap.parse_args(argv)
     if passthrough is not None:
@@ -383,9 +829,12 @@ def main() -> None:
     DRY_RUN = a.dry_run
     if a.command == "board" and a.action != "list" and not a.name:
         fail("usage: jxb board check NAME")
-    if shutil.which("docker") is None and a.command not in ("board", "deploy", "run"):
+    if shutil.which("docker") is None and a.command not in ("board", "deploy", "run", "ssh", "gdb", "debug", "trace",
+                                                            "vscode", "launch"):
         fail("docker not found")
-    a.fn(Profile(a.profile), a)
+    prof = Profile(a.profile)
+    prof.mode = a.mode or prof.mode
+    a.fn(prof, a)
 
 
 if __name__ == "__main__":

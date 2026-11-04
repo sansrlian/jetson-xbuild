@@ -1,0 +1,8 @@
+# Build and runtime dependencies of depthai-core's ROS release (its package.xml rosdeps, resolved for noble), for
+# profiles that build depthai themselves (extras/depthai/build.sh). The board needs the runtime parts too.
+libusb-1.0-0-dev
+libudev-dev
+nlohmann-json3-dev
+libspdlog-dev
+libfmt-dev
+libcurl4-openssl-dev

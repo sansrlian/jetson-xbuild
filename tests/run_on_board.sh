@@ -14,17 +14,19 @@ step() {
 }
 
 # ROS setup scripts read unset variables (AMENT_TRACE_SETUP_FILES, ...): source them without nounset.
+# The underlay is the board's /opt/ros/<distro>, or the copy jxb shipped for distros the board lacks (JXB_ROS_SETUP);
+# the test workspaces' local_setup adds only themselves.
 ros_source() {
     set +u
     # shellcheck source=/dev/null
-    source "/opt/ros/${ROS_DISTRO:-jazzy}/setup.bash" && source "$1"
+    source "${JXB_ROS_SETUP:-/opt/ros/${ROS_DISTRO:-jazzy}/setup.bash}" && source "$1"
     local rc=$?
     set -u
     return $rc
 }
 
 ros_detector() {
-    ros_source "$D/ros/setup.bash" || return 1
+    ros_source "$D/ros/local_setup.bash" || return 1
     timeout 30 ros2 run jxb_test_node detector 2>&1 | tee /tmp/jxb_detector.log
     grep -q "published gpu-ok" /tmp/jxb_detector.log
 }
@@ -38,12 +40,12 @@ ort_ep() {
 }
 
 ros_python() {
-    ros_source "$D/ros/setup.bash" || return 1
+    ros_source "$D/ros/local_setup.bash" || return 1
     python3 -c 'from jxb_test_msgs.msg import Detection; print(Detection(label="board", score=1.0))'
 }
 
 isaac_cuda_buffer() {
-    ros_source "$D/isaac/setup.bash" || return 1
+    ros_source "$D/isaac/local_setup.bash" || return 1
     "$D/isaac/jxb_isaac_test/lib/jxb_isaac_test/cuda_buffer_check"
 }
 
@@ -53,6 +55,7 @@ step trt_engine "$D/bin/trt_smoke" "$D/models/affine.onnx" /tmp/jxb_affine.engin
 step ort_cpu "$D/bin/ort_smoke" "$D/models/affine.onnx"
 step ort_cuda ort_ep cuda
 step ort_tensorrt ort_ep tensorrt
+step ort_bench "$D/bin/ort_bench" "$D/models/affine.onnx" --ep cuda --iters 20 --warmup 2
 step onnx_check "$D/bin/onnx_check" "$D/models/affine.onnx"
 step ros_detector ros_detector
 step ros_python ros_python

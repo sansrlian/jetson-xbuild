@@ -64,6 +64,20 @@ ssh-copy-id nvidia@192.168.178.83
 ./jxb run nano-lab -- ros2 run object_detection_package object_detection
 ```
 
+## Debug, trace, VS Code
+
+```bash
+./jxb debug nano-lab --pkg object_detection_package --exe object_detection   # gdbserver (SSH-tunnelled) + cross gdb
+./jxb trace nsys nano-lab --tegrastats -- ros2 run object_detection_package object_detection
+./jxb trace tegrastats nano-lab --live                                         # load, clocks, power, temperatures
+./jxb trace kernel nano-lab --live --top                                       # ftrace scheduler stats (sudo on the board)
+./jxb trace report nano-lab                                                    # analysis of the latest recording
+./jxb vscode init -w ~/ros2_ws --pkg object_detection_package --exe object_detection
+```
+
+Recordings go to `traces/<board>/`, with `summary.json` for tools. VS Code gets the Renesas-style tasks and debug
+configurations in `vscode/<ws>.code-workspace`. Details: [docs/workflows.md](docs/workflows.md).
+
 ## Layout
 
 | Path | What |
@@ -78,5 +92,8 @@ ssh-copy-id nvidia@192.168.178.83
 | `toolchain/bin/` | in-container tools: `cross-colcon-build`, `jxb-elfcheck`, `jxb-rosdeps` |
 | `extras/` | source builds jxb packs as sysroot/board extras: `onnxruntime/` (CUDA + TensorRT EP, sm_87), `acados/` |
 | `tests/` | cross-build test suite and the board runner |
-| `docs/` | [findings and pitfalls](docs/findings.md) |
+| `toolchain/jxb_trace.py`, `toolchain/jxb_vscode.py` | `jxb trace ...` and `jxb vscode init` |
+| `tools/board/` | helpers jxb copies to the board on demand (`jxb-ftrace.sh`) |
+| `traces/`, `vscode/` | recordings and generated VS Code workspaces (local, gitignored) |
+| `docs/` | [workflows](docs/workflows.md), [findings and pitfalls](docs/findings.md) |
 | `attic/` | the earlier, untested scaffold (2026-10-26), kept for reference |

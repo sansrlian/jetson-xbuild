@@ -74,7 +74,8 @@ qemu_ros_python() {
 cuda_lib_path="/usr/local/cuda-${JXB_CUDA_VERSION}/targets/${JXB_CUDA_TARGET}/lib:/usr/lib/aarch64-linux-gnu/nvidia"
 
 step models python3 "$T/models/make_models.py" "$STAGE/models"
-for p in cuda_hello trt_smoke ort_smoke onnx_lib; do
+step trace_parsers python3 -B -m unittest discover -q -s "$T/trace"   # jxb trace analysis, no board needed
+for p in cuda_hello trt_smoke ort_smoke ort_bench onnx_lib; do
     step "$p" cmake_project "$p"
 done
 step ros_ws ros_build
@@ -87,6 +88,7 @@ cp "$T/run_on_board.sh" "$STAGE/"
 step elfcheck jxb-elfcheck "$STAGE"
 step py_suffix py_suffix_check
 step qemu_ort qemu "/opt/onnxruntime/lib" "$STAGE/bin/ort_smoke" "$STAGE/models/affine.onnx"
+step qemu_ort_bench qemu "/opt/onnxruntime/lib" "$STAGE/bin/ort_bench" "$STAGE/models/affine.onnx" --iters 3 --warmup 0
 step qemu_onnx qemu "/usr/lib/aarch64-linux-gnu" "$STAGE/bin/onnx_check" "$STAGE/models/affine.onnx"
 step qemu_trt_load qemu "$cuda_lib_path" "$STAGE/bin/trt_smoke"
 step qemu_ros_py qemu_ros_python

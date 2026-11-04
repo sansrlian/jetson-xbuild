@@ -83,5 +83,7 @@ if [[ -d "${install_base}" ]]; then
     { find "${install_base}" -maxdepth 1 -type f -name 'setup.*'
       find "${install_base}" -type f -path '*/share/ament_index/resource_index/parent_prefix_path/*'
     } | xargs -r sed -i "s#${ARM64_SYSROOT}/#/#g"
+    # Libraries without SONAME linked by path (Isaac ROS, ...) end up as absolute host paths in DT_NEEDED.
+    "$(dirname "$(realpath "$0")")/jxb-fix-needed" "${install_base}"
 fi
 exit $rc

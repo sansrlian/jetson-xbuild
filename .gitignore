@@ -10,3 +10,5 @@ boards.toml
 __pycache__/
 jetson-xbuild/
 qemu_*.core
+traces/
+vscode/*.code-workspace

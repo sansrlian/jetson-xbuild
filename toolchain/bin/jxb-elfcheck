@@ -115,6 +115,9 @@ def main() -> int:
         search = [Path(d.replace("$ORIGIN", str(p.parent))) if "$ORIGIN" in d else a.sysroot / d.lstrip("/")
                   for d in runpath] + tree_libdirs + a.extra_libdir + sdirs
         for lib in needed:
+            if lib.startswith("/"):   # a library without SONAME linked by path; jxb-fix-needed rewrites these
+                issues.append(f"absolute DT_NEEDED {lib}")
+                continue
             found = next((d / lib for d in search if (d / lib).exists()), None)
             if found is None:
                 issues.append(f"unresolved {lib}")
