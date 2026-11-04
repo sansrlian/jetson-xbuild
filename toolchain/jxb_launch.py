@@ -13,6 +13,10 @@ the end of --duration stops the launch with SIGINT, so the nodes shut down clean
   --bag       ros2 bag record of the given topics (all topics without a list), MCAP
   --with CMD  helper started next to the launch in the same environment and mode, stopped after it; {tools} is
               jxb's board tools, e.g. "python3 {tools}/jxb_image_pub.py --rate 30 /camera/color/image_raw"
+  --mem-guard MB  stop the launch (SIGINT) when the board's MemAvailable falls below MB, so a leaking stack cannot
+              push a shared board into the out-of-memory killer
+  --rates T   message rate of the given topics once a second (tools/board/jxb_rate_probe.py: raw subscriptions,
+              no deserialization, unlike `ros2 topic hz`)
 
 The launch log, recordings and their analysis (`jxb trace report`, `jxb trace plot`) land in
 traces/<board>/<stamp>-launch-<label>/.
@@ -32,10 +36,20 @@ q = shlex.quote
 # Board-wide per-process sampler: uptime + every process's /proc/<pid>/stat once a second (CPU ticks, RSS pages,
 # parent). Runs on the board host, so it also sees the processes of a runtime container. "R" marks the session's
 # shell and "C" the init of its container (JXB_CN): the analysis counts their descendants as the session's.
+# "M" lines are the system's memory counters, for memory that no process's RSS shows (caches, shared memory, kernel).
 PROCMON = ('echo "R $$"; while :; do echo "T $(cut -d" " -f1 /proc/uptime)"; '
            'if [ -n "$JXB_CN" ] && [ -z "$JXB_CP" ]; then JXB_CP=$(docker inspect -f "{{.State.Pid}}" "$JXB_CN" '
            '2>/dev/null | grep -v "^0$") && echo "C $JXB_CP"; fi; '
-           'cat /proc/[0-9]*/stat 2>/dev/null; sleep 1; done')
+           'cat /proc/[0-9]*/stat 2>/dev/null; '
+           'grep -E "^(MemAvailable|MemFree|Buffers|Cached|Shmem|Slab|SReclaimable|SUnreclaim|KernelStack|PageTables|'
+           'NvMap[A-Za-z]*|CmaFree):" /proc/meminfo 2>/dev/null | sed "s/^/M /"; sleep 1; done')
+
+
+# A background job of a non-interactive shell starts with SIGINT ignored, and Python then installs no SIGINT handler,
+# so ros2 launch never sees Ctrl-C or the end of --duration. GNU timeout resets it for its child as a side effect,
+# uutils' timeout (Ubuntu 26.04) does not: reset it explicitly right before exec.
+SIGINT_DEFAULT = ["python3", "-c", "import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); "
+                  "os.execvp(sys.argv[1], sys.argv[1:])"]
 
 
 def _label(ws: Path, target: list[str]) -> str:
@@ -56,7 +70,7 @@ def launch_script(p, board, ws: Path, a, remote: str, tools: str) -> str:
     a non-interactive shell, so $! is the process group): one signal stops a whole process tree, including nodes
     whose ros2 launch is gone (SIGKILL after the grace period, a lost connection without a terminal). The script
     forwards Ctrl-C and hangups to the launch's group and sweeps all groups at the end."""
-    run = ["ros2", "launch", *J.board_launch_args(board, ws, a.cmd)]
+    run = [*SIGINT_DEFAULT, "ros2", "launch", *J.board_launch_args(board, ws, a.cmd)]
     if a.duration:   # --foreground: no process group of its own, the launch stays in its session's group
         run = ["timeout", "--foreground", "-s", "INT", "-k", "20", str(a.duration), *run]
     parts = ["export PYTHONUNBUFFERED=1 RCUTILS_LOGGING_BUFFERED_STREAM=0; groups=; "]
@@ -65,15 +79,32 @@ def launch_script(p, board, ws: Path, a, remote: str, tools: str) -> str:
         parts.append(f"setsid bash -c {q(cmd)} > {q(f'{remote}/with{i}.log')} 2>&1 & groups=\"$groups $!\"; ")
     if a.bag is not None:   # topic names have no spaces: "t1 t2" (one argument, e.g. a VS Code setting) = t1 t2
         topics = [t for item in a.bag for t in item.split()]
-        parts.append(f"setsid ros2 bag record -s mcap -o {q(remote + '/bag')} {shlex.join(topics or ['-a'])} "
+        # --topics: Lyrical dropped positional topics (Jazzy and Kilted take both forms)
+        sel = ["--topics", *topics] if topics else ["-a"]
+        parts.append(f"setsid ros2 bag record -s mcap -o {q(remote + '/bag')} {shlex.join(sel)} "
                      f"> {q(remote + '/bag.log')} 2>&1 & JXB_BAG=$!; ")
-    if helpers or a.bag is not None:
+    if a.rates:   # like a helper: own group, SIGTERM at the end
+        topics = [t for item in a.rates for t in item.split()]
+        parts.append(f"setsid python3 {q(tools + '/jxb_rate_probe.py')} {shlex.join(topics)} "
+                     f"> {q(remote + '/rates.log')} 2>&1 & groups=\"$groups $!\"; ")
+    if helpers or a.bag is not None or a.rates:
         parts.append("sleep 2; ")
     inner = f"{shlex.join(run)} 2>&1 | tee -i {q(remote + '/launch.log')}; exit ${{PIPESTATUS[0]}}"
-    parts.append(f"setsid bash -c {q(inner)} & JXB_L=$!; echo $JXB_L > {q(remote + '/pgid')}; "
-                 "trap 'kill -INT -- -$JXB_L 2>/dev/null' INT TERM HUP; "
+    parts.append(f"setsid bash -c {q(inner)} & JXB_L=$!; echo $JXB_L > {q(remote + '/pgid')}; ")
+    if a.mem_guard:   # inside the session (also in a container: /proc/meminfo is the board's)
+        # SIGINT every 5 s (a signal sent before the launch installed its handler is lost), SIGKILL after 20 s
+        log, mb = q(remote + "/memguard.log"), int(a.mem_guard)
+        parts.append(f"( t=; while kill -0 $JXB_L 2>/dev/null; do if [ -z \"$t\" ]; then "
+                     f"m=$(awk '/^MemAvailable:/ {{print int($2/1024)}}' /proc/meminfo); if [ \"$m\" -lt {mb} ]; then "
+                     f"t=$SECONDS; echo \"[jxb] MemAvailable $m MB < {mb} MB: stopping the launch\" | tee {log} >&2; "
+                     "fi; fi; if [ -n \"$t\" ]; then e=$((SECONDS - t)); if [ $e -ge 20 ]; then "
+                     "kill -KILL -- -$JXB_L 2>/dev/null; elif [ $((e % 5)) -eq 0 ]; then kill -INT -- -$JXB_L 2>/dev/null; "
+                     "fi; fi; sleep 1; done ) & JXB_MG=$!; ")
+    parts.append("trap 'kill -INT -- -$JXB_L 2>/dev/null' INT TERM HUP; "
                  "wait $JXB_L; rc=$?; while kill -0 $JXB_L 2>/dev/null; do wait $JXB_L; rc=$?; done; "
                  "trap - INT TERM HUP; ")
+    if a.mem_guard:
+        parts.append("kill $JXB_MG 2>/dev/null; ")
     # helpers, then the recorder: SIGTERM (background jobs of a non-interactive shell ignore SIGINT)
     parts.append("for g in $groups; do kill -TERM -- -$g 2>/dev/null; done; ")
     if a.bag is not None:   # numeric topics as CSV for the analysis (inference times, latencies)
@@ -127,7 +158,8 @@ def cmd_launch(p, a) -> None:
                   check=False)
         rc = 130
     T._save(board, p, a, "launch", local, remote, started, time.time() - t0, rc, mode=mode, target=list(a.cmd),
-            helpers=[w for w in a.with_ if w.strip()], bag=a.bag, interval_ms=a.interval if a.monitor else None)
+            helpers=[w for w in a.with_ if w.strip()], bag=a.bag, interval_ms=a.interval if a.monitor else None,
+            mem_guard_mb=a.mem_guard, rates=a.rates)
     # a launch ended by --duration or Ctrl-C (SIGINT) is a normal end
     sys.exit(0 if rc in (0, 124, 130, -2) else rc)
 
@@ -147,6 +179,9 @@ def register(sub, jxb) -> None:
     s.add_argument("--bag", nargs="*", metavar="TOPIC", help="record these topics (no list: all)")
     s.add_argument("--with", dest="with_", action="append", default=[], metavar="CMD",
                    help="helper command next to the launch (repeatable; {tools} = jxb's board tools)")
+    s.add_argument("--rates", nargs="+", metavar="TOPIC", help="message rates of these topics (light probe)")
+    s.add_argument("--mem-guard", type=int, metavar="MB",
+                   help="stop the launch when the board's MemAvailable falls below MB")
     s.add_argument("--label", help="suffix of the trace directory (default: the launch file's name)")
     s.add_argument("--keep", action="store_true", help="keep the recording on the board")
     s.add_argument("--no-lock", action="store_true", help="--monitor without the board's measurement lock")

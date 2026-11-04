@@ -767,6 +767,55 @@ def procstat_summary(log: Path, sysconf: Path, top: int = 15) -> dict:
             "session": session[:top], "top": [r for r in rows if not r["session"]][:top]}
 
 
+def meminfo_summary(log: Path) -> dict | None:
+    """The system memory counters ("M" lines of `jxb launch --monitor`) over time, in MB, with their linear trend:
+    memory growth that no process's RSS shows (page cache, shared memory, kernel or driver allocations)."""
+    t, rows = None, []
+    for line in log.read_text(errors="replace").splitlines():
+        if line.startswith("T "):
+            t = float(line[2:])
+            rows.append({"t": t})
+        elif line.startswith("M ") and rows:
+            key, _, value = line[2:].partition(":")
+            if value.split()[:1] and value.split()[0].isdigit():
+                rows[-1][key.strip()] = int(value.split()[0]) / 1024
+    rows = [r for r in rows if len(r) > 1]
+    if len(rows) < 3:
+        return None
+    t0 = rows[0]["t"]
+    keys = sorted({k for r in rows for k in r if k != "t"})
+    with open(log.with_name("meminfo.csv"), "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["t_s", *keys])
+        w.writeheader()
+        for r in rows:
+            w.writerow({"t_s": round(r["t"] - t0, 1), **{k: round(r[k], 1) for k in keys if k in r}})
+    out = {"samples": len(rows), "duration_s": round(rows[-1]["t"] - t0, 1), "csv": "meminfo.csv", "keys": {}}
+    for k in keys:
+        pts = [(r["t"] - t0, r[k]) for r in rows if k in r]
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        slope = statistics.linear_regression(xs, ys).slope * 60 if len(set(xs)) > 1 and len(set(ys)) > 1 else 0.0
+        out["keys"][k] = {"first_mb": round(ys[0], 1), "last_mb": round(ys[-1], 1), "min_mb": round(min(ys), 1),
+                          "max_mb": round(max(ys), 1), "slope_mb_min": round(slope, 1)}
+    return out
+
+
+def rates_summary(log: Path, skip: int = 3) -> dict:
+    """Per-second message rates of `jxb launch --rates` (jxb_rate_probe.py JSON lines) per topic; the first
+    `skip` reports of a topic (discovery, start-up) are left out."""
+    series: dict[str, list[float]] = defaultdict(list)
+    for line in log.read_text(errors="replace").splitlines():
+        if line.startswith('{"probe"'):
+            r = json.loads(line)
+            series[r["probe"]].append(r["hz"])
+    out = {}
+    for topic, hz in series.items():
+        v = sorted(hz[skip:]) or sorted(hz)
+        out[topic] = {"reports": len(hz), "median_hz": round(statistics.median(v), 2),
+                      "mean_hz": round(statistics.fmean(v), 2), "p10_hz": _pct(v, 0.1), "p90_hz": _pct(v, 0.9),
+                      "min_hz": v[0], "max_hz": v[-1]}
+    return out
+
+
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -853,6 +902,13 @@ def analyze(d: Path) -> dict:
         s["launch"] = launch_log_summary(d / "launch.log")
     if (d / "procstat.log").exists():
         s["processes"] = procstat_summary(d / "procstat.log", d / "sysconf")
+        mem = meminfo_summary(d / "procstat.log")
+        if mem:
+            s["meminfo"] = mem
+    if (d / "rates.log").exists():
+        s["rates"] = rates_summary(d / "rates.log")
+    if (d / "memguard.log").exists():
+        s["memguard"] = (d / "memguard.log").read_text(errors="replace").strip()
     if (d / "bag/metadata.yaml").exists():
         s["bag"] = bag_summary(d / "bag/metadata.yaml")
     helpers = sorted(d.glob("with*.log"))
@@ -952,6 +1008,21 @@ def format_summary(s: dict) -> str:
                                         ("cpu_max_pct", "max%", "6.1f"), ("rss_max_mb", "RSS MB", "7.1f"),
                                         ("alive_s", "alive s", "7.1f"), ("pid", "pid", "7d"),
                                         ("comm", "process", "")], limit=12)
+    mi = s.get("meminfo")
+    if mi:
+        def trend(k: str) -> str:
+            v = mi["keys"].get(k)
+            return f"{k} {v['first_mb']:.0f} -> {v['last_mb']:.0f} MB ({v['slope_mb_min']:+.0f} MB/min)" if v else ""
+        lines.append("memory: " + ", ".join(x for x in map(trend, ("MemAvailable", "Cached", "Shmem", "Slab",
+                                                                    "SUnreclaim")) if x))
+        nvmap = [trend(k) for k in mi["keys"] if k.startswith("NvMap")]
+        if nvmap:
+            lines.append("  " + ", ".join(nvmap))
+    if s.get("memguard"):
+        lines.append(f"  {s['memguard']}")
+    for topic, r in (s.get("rates") or {}).items():
+        lines.append(f"rate {topic}: median {r['median_hz']:.1f} Hz (p10 {r['p10_hz']:.1f}, p90 {r['p90_hz']:.1f}, "
+                     f"{r['reports']} reports)")
     b = s.get("bag")
     if b:
         lines.append(f"bag: {b['messages']} messages in {b['duration_s']} s")

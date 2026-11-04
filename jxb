@@ -38,6 +38,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -761,6 +762,9 @@ def cmd_ssh(p: Profile, a) -> None:
 # ----------------------------------------------------------------------------------------------- main
 def main() -> None:
     global DRY_RUN
+    # Started as a background job of a non-interactive shell (a script, a GUI), jxb inherits SIGINT ignored and
+    # could not be stopped with it (docs/findings.md F69): restore Python's KeyboardInterrupt handler.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     ap = argparse.ArgumentParser(prog="jxb", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--profile")
     ap.add_argument("--mode", choices=["auto", "native", "container"],

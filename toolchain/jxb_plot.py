@@ -189,12 +189,65 @@ def plot_bag(d: Path, s: dict, out: Path) -> Path | None:
     return p
 
 
+def plot_memory(d: Path, out: Path) -> Path | None:
+    """The system's memory counters of `jxb launch --monitor` (meminfo.csv) over time."""
+    f = d / "meminfo.csv"
+    if not f.exists():
+        return None
+    rows = list(csv.DictReader(open(f)))
+    if len(rows) < 2:
+        return None
+    t = [float(r["t_s"]) / 60 for r in rows]
+    fig, ax = plt.subplots(figsize=(11, 3.2))
+    for key in ("MemAvailable", "MemFree", "Cached", "Shmem", "Slab"):
+        if key in rows[0]:
+            ax.plot(t, _col(rows, key, 1 / 1024), lw=1.0, label=key)
+    ax.set_xlabel("time [min]")
+    ax.set_ylabel("GB")
+    ax.set_title(f"{d.name}: system memory (/proc/meminfo)", fontsize=9)
+    ax.legend(fontsize=7, ncol=5, loc="upper right")
+    fig.tight_layout()
+    p = out / "memory.png"
+    fig.savefig(p)
+    plt.close(fig)
+    return p
+
+
+def plot_rates(d: Path, out: Path) -> Path | None:
+    """Topic rates of `jxb launch --rates` (rates.log) over time."""
+    f = d / "rates.log"
+    if not f.exists():
+        return None
+    series: dict[str, list[tuple[float, float]]] = {}
+    for line in f.read_text(errors="replace").splitlines():
+        if line.startswith('{"probe"'):
+            r = json.loads(line)
+            series.setdefault(r["probe"], []).append((r["t"], r["hz"]))
+    if not series:
+        return None
+    t0 = min(v[0][0] for v in series.values())
+    fig, ax = plt.subplots(figsize=(11, 3.0))
+    for topic, pts in series.items():
+        ax.plot([p[0] - t0 for p in pts], [p[1] for p in pts], lw=1.0, label=topic)
+    ax.set_xlabel("time [s]")
+    ax.set_ylabel("Hz")
+    ax.set_ylim(bottom=0)
+    ax.set_title(f"{d.name}: topic rates (jxb_rate_probe)", fontsize=9)
+    ax.legend(fontsize=7)
+    fig.tight_layout()
+    p = out / "rates.png"
+    fig.savefig(p)
+    plt.close(fig)
+    return p
+
+
 def report(d: Path) -> Path:
     s = json.loads((d / "summary.json").read_text())
     out = d / "plots"
     out.mkdir(exist_ok=True)
-    plots = [p for p in (plot_tegrastats(d, out), plot_processes(d, s, out), plot_bench(d, s, out),
-                         plot_nsys(d, s, out), plot_kernel(d, s, out), plot_bag(d, s, out)) if p]
+    plots = [p for p in (plot_tegrastats(d, out), plot_processes(d, s, out), plot_memory(d, out),
+                         plot_rates(d, out), plot_bench(d, s, out), plot_nsys(d, s, out), plot_kernel(d, s, out),
+                         plot_bag(d, s, out)) if p]
     md = [f"# {d.name}", "", "```text", jxb_trace.format_summary(s), "```", ""]
     md += [f"![{p.stem}](plots/{p.name})" for p in plots]
     (d / "report.md").write_text("\n".join(md) + "\n")

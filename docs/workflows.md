@@ -66,7 +66,14 @@ cd ~/ros2_ws
 - Ctrl-C or the end of `--duration` stops the launch with SIGINT, so the nodes shut down cleanly; helpers
   (`--with`) and the bag recorder stop afterwards.
 - `--monitor` samples every process's CPU and RSS each second and attributes them to the session by ancestry
-  (the session's shell or its runtime container), so other users' processes on a shared board don't count.
+  (the session's shell or its runtime container), so other users' processes on a shared board don't count. It
+  also samples the system's memory counters (`/proc/meminfo`: `MemAvailable`, `Cached`, `Shmem`, `Slab`, ...), for
+  memory that no process's RSS shows; the report prints their trends in MB/min and writes `meminfo.csv`.
+- `--mem-guard MB` stops the launch when the board's `MemAvailable` falls below MB (SIGINT every 5 s, SIGKILL
+  after 20 s, noted in `memguard.log`), so a leaking stack can't push a shared board into the out-of-memory killer.
+- `--rates TOPIC ...` measures message rates once a second in one probe process (`tools/board/jxb_rate_probe.py`,
+  the publishers' reliability; results in `rates.log` and the report). Receiving large messages costs the probe their
+  transport (about a quarter of a core for 1280x800 images at 30 Hz): for image streams, probe their camera info.
 - `--bag TOPIC ...` records MCAP; numeric topics (e.g. `inference_time`) and header latencies become CSV for the
   analysis. `--bag` without topics records everything, including images: that gets big quickly.
 - `tools/board/jxb_image_pub.py` is a synthetic camera (road scene, lane markings, moving objects; optional

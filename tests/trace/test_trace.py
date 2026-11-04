@@ -140,5 +140,35 @@ class NsysTest(unittest.TestCase):
         self.assertEqual(jxb_trace._union_ns([]), 0)
 
 
+class RatesTest(unittest.TestCase):
+    def test_rates(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "rates.log"
+            rows = [{"probe": "/img", "t": i, "hz": hz, "n": int(hz)} for i, hz in enumerate([3, 10, 20, 24, 23, 25, 22])]
+            log.write_text("starting\n" + "\n".join(json.dumps(r) for r in rows) + "\n")
+            r = jxb_trace.rates_summary(log)["/img"]
+            self.assertEqual(r["reports"], 7)
+            self.assertEqual(r["median_hz"], 23.5)       # first three reports skipped
+            self.assertEqual((r["min_hz"], r["max_hz"]), (22, 25))
+
+
+class MeminfoTest(unittest.TestCase):
+    def test_trend(self):
+        lines = ["R 100"]
+        for i in range(5):   # MemAvailable falls 60 MB/min, Cached grows 120 MB/min, Shmem constant
+            lines += [f"T {1000 + i}.00", "123 (bash) S 1 123 123 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 5 1 2",
+                      f"M MemAvailable:    {5000 * 1024 - i * 1024} kB", f"M Cached:    {1000 * 1024 + i * 2048} kB",
+                      "M Shmem:    10240 kB"]
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "procstat.log"
+            log.write_text("\n".join(lines) + "\n")
+            m = jxb_trace.meminfo_summary(log)
+            self.assertEqual(m["samples"], 5)
+            self.assertAlmostEqual(m["keys"]["MemAvailable"]["slope_mb_min"], -60.0)
+            self.assertAlmostEqual(m["keys"]["Cached"]["slope_mb_min"], 120.0)
+            self.assertEqual(m["keys"]["Shmem"]["slope_mb_min"], 0.0)
+            self.assertTrue((Path(d) / "meminfo.csv").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

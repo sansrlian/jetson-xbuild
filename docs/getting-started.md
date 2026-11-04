@@ -128,8 +128,11 @@ jxb trace plot nano-lab                                       # plots + report.m
 jxb trace compare traces/nano-lab/A traces/nano-lab/B --name my-test
 ```
 
-- `--monitor` records CPU and RAM per node plus tegrastats; `--bag` records topics, numeric ones also as CSV;
-  `--with` starts helpers next to the launch, such as the synthetic camera above for testing without hardware.
+- `--monitor` records CPU and RAM per node, the system's memory counters and tegrastats; `--bag` records topics,
+  numeric ones also as CSV; `--with` starts helpers next to the launch, such as the synthetic camera above for
+  testing without hardware.
+- `--rates TOPIC ...` measures topic rates in one small probe process; `--mem-guard MB` stops the launch before the
+  board runs out of memory (useful for long runs on a shared board).
 - Everything lands in `traces/<board>/<date>-<kind>-<label>/` on the PC; `summary.json` there is the
   machine-readable result.
 - Kernel traces (`jxb trace kernel`) need root on the board: run them in a terminal and type the sudo
