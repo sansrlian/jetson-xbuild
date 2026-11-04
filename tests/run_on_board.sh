@@ -6,10 +6,12 @@ D=$(cd "$(dirname "$0")" && pwd)
 export LD_LIBRARY_PATH="$D/lib:${LD_LIBRARY_PATH:-}"
 results=()
 overall=0
+skip=" ${JXB_TEST_SKIP:-} "   # steps jxb leaves out in this mode (space-separated names)
 
 step() {
     local name="$1"; shift
     printf '\n=== %s\n' "$name"
+    if [[ "$skip" == *" $name "* ]]; then echo "skipped (JXB_TEST_SKIP)"; results+=("SKIP  $name"); return; fi
     if "$@"; then results+=("PASS  $name"); else results+=("FAIL  $name"); overall=1; fi
 }
 

@@ -185,7 +185,7 @@ encoder (NVENC)**, so pixel streaming costs CPU, and a desktop session costs sev
 - [x] SSH key login to the Nano (done by the user) and `jxb board check nano-lab` (2026-11-03, findings F35)
 - [x] D2: Lyrical on the board via container first, then source build; both must stay supported (2026-11-02)
 - [x] Remote GUI besides SSH is a bonus (W8) (2026-11-02)
-- [ ] Commit the current scaffold as the baseline; create the remote repo
+- [x] Baseline committed, remote repo created: `sansrlian/jetson-xbuild` on GitHub (2026-11-03/04)
 
 ### Phase 1: Minimal working xbuild (Jazzy/Kilted on 24.04, one Nano)
 Implementation notes and every pitfall found on the way: [docs/findings.md](docs/findings.md).
@@ -208,20 +208,22 @@ Implementation notes and every pitfall found on the way: [docs/findings.md](docs
       profile `jp721-lyrical-isaac`, test package with Isaac ROS TensorRT + `rosidl::Buffer` CUDA backend (F30-F32)
       (2026-11-02). Isaac ROS 4.x/Jazzy (no arm64 debs, F29) stays a source build if needed
 - [x] On the Nano: `jxb test --board` 8/8, deploy + run SAM object_detection on the GPU (2026-11-03, F36-F38)
-- [ ] Remote gdb on the Nano (`board gdbserver`), nsys capture round trip
-- [ ] Board runtime for Kilted: install `ros-kilted-*` on the Nano (needs approval, shared lab board) or ship it
+- [x] Remote gdb on the Nano (`jxb debug`, F42) and the nsys capture round trip (`jxb trace nsys`, F46)
+      (2026-11-03)
+- [x] Board runtime for Kilted: shipped to `~/jxb/<profile>/runtime` instead of installed, so the shared board's
+      apt stays untouched (F44) (2026-11-03)
 - [x] Success: `object_detection_package` builds in xbuild and runs on the Nano (GPU) without on-board building
       (2026-11-03)
 
 ### Phase 1b: Board workflows (next, 2026-11-03)
 Like the Renesas RDK's VS Code tasks/launch configs, but as `jxb` commands first; the VS Code files only call
 `jxb`, so the same workflows work from the terminal, from VS Code and later from JetsonPlanner.
-- [ ] All profiles on the Nano: Jazzy native (done), Kilted and Lyrical-on-Noble as portable runtime under
+- [x] All profiles on the Nano: Jazzy native, Kilted and Lyrical-on-Noble as portable runtime under
       `~/jxb/<profile>` (no apt on the shared board), Lyrical (26.04) as container (`docker`, `nvidia` is in the
-      docker group). Done: Kilted (tests 14 + 9) and Lyrical + Isaac ROS 5.0 (15 + 10) from the shipped
-      `/opt/ros/<distro>`, SAM `object_detection` on the GPU under both (F44). Lyrical 26.04: `board_exec` runs
-      it in `jxb-rt:<profile>` (arm64 image imported from the sysroot on the host, GPU via CDI); image loaded on
-      the Nano, `jxb --profile jp721-lyrical test --board nano-lab` still to run
+      docker group). Kilted (tests 14 + 9) and Lyrical + Isaac ROS 5.0 (15 + 10) from the shipped
+      `/opt/ros/<distro>`, SAM `object_detection` on the GPU under both (F44). Lyrical 26.04 in `jxb-rt:<profile>`
+      (arm64 image imported from the sysroot on the host, GPU via CDI): tests 15 + 6, the three ONNX Runtime GPU
+      steps skipped in container mode (F56, F72) (2026-11-04)
 - [x] GPU inference benchmark with ONNX Runtime (CUDA EP, TensorRT EP FP16) vs `trtexec` on a SAM YOLO model:
       latency p50/p99, throughput (feeds the inference plan in `quantization-aware-model/PLAN.md`).
       S0 on the Nano: CUDA EP 35.1 ms, TensorRT EP fp32 22.6 ms, **fp16 11.8 ms**, trtexec fp16 10.8 ms
@@ -259,17 +261,20 @@ Like the Renesas RDK's VS Code tasks/launch configs, but as `jxb` commands first
 - [x] Inference baselines (`jxb trace bench`): ONNX Runtime CPU/CUDA/TensorRT EP vs. trtexec engines, fp32/fp16 and
       INT8 (PTQ/QAT/full INT8, YOLO26n) (F49); SAM node: ONNX Runtime 46 ms vs. TensorRT fp16 17 ms vs. INT8 15 ms,
       -0.9 GB RAM, -1 W (F50); plots and comparisons: `jxb trace plot|compare`; board lock for shared measurements
-- [ ] Full SAM stack on the Nano (`launch/launch.py module:=parking`, Kilted native + container): first runs
-      found undeclared launch dependencies (topic_tools, foxglove_bridge, rplidar_ros, mavros; F52), now added by
-      `jxb-rosdeps`; sysroots rebuilt, runs pending. Kernel trace of the stack waits for root on the board
+- [x] Full SAM stack on the Nano (`launch/launch.py module:=parking`, Kilted native + container): the first runs
+      found undeclared launch dependencies (topic_tools, foxglove_bridge, rplidar_ros, mavros; F52, F60), now added
+      by `jxb-rosdeps`; all 12 processes run and stop cleanly natively and in the container (F59), a 25-minute run
+      shows no memory leak (F71); analysis in docs/latex/measurements.pdf (2026-11-03/04)
+- [ ] Kernel trace of the stack (`jxb trace kernel`): needs root on the board (sudo password typed by the user)
 
 ### Phase 2: Fleet and tracing
 - [ ] `orin-agent` v0 (health, deploy, run, logs, trace) + CLI on top
 - [ ] Multi-board deploy and concurrent debugging with ≥2 boards
 - [ ] Synchronized nsys + ros2_tracing + tegrastats capture on N boards, Perfetto reports
-- [ ] Lyrical mode (a): 26.04 Lyrical container with `--runtime nvidia` on JetPack; CUDA/cuDNN/TensorRT come from
-      the board via nvidia-container-toolkit (no CUDA 13.2/TensorRT for 26.04 sbsa, findings F23); hybrid sysroot
-      (26.04 + Lyrical + r39.2 dev debs); verify on the Nano, deploy into a mounted volume
+- [x] Lyrical mode (a): 26.04 Lyrical container on JetPack, GPU through the board's CDI spec; CUDA/cuDNN/TensorRT
+      come from the board via nvidia-container-toolkit (no CUDA 13.2/TensorRT for 26.04 sbsa, findings F23); hybrid
+      sysroot (26.04 + Lyrical + r39.2 dev debs); deployment in a mounted volume. Verified on the Nano: test suite,
+      SAM's detector with TensorRT, bag recording and clean shutdown (F68, F69, F72) (2026-11-04)
 - [ ] CI: shellcheck, image builds, sysroot build, proof packages
 
 ### Phase 3: Golden image (stock JetPack + bundle)
@@ -279,12 +284,16 @@ Like the Renesas RDK's VS Code tasks/launch configs, but as `jxb` commands first
 - [ ] Bundle contains SAM stack + agent + tracing tools; measure RAM baseline on the Nano
 
 ### Phase 4: Multi-distro
-- [ ] Profiles per distro and mode (Jazzy/Kilted native, Lyrical container, Lyrical source); switch = new host
-      image + sysroot + bundle. Done for the build side: `jp721-jazzy`, `jp721-kilted`, `jp721-lyrical` (2026-11-02)
-- [ ] Lyrical mode (b): native Lyrical on 24.04 from NVIDIA's Isaac ROS Buildfarm (`jp721-lyrical-isaac`, build side
-      done 2026-11-02, tests 13/13); runs on the Nano without installing anything (shipped runtime, F44);
-      compare RAM/disk with mode (a)
-- [ ] Document the supported matrix (L4T × Ubuntu × ROS)
+- [x] Profiles per distro and mode (Jazzy/Kilted native, Lyrical container, Lyrical native); switch = new host
+      image + sysroot (+ bundle, Phase 3). Build side 2026-11-02; on the board: Jazzy native, Kilted and Lyrical on
+      Noble shipped, Lyrical 26.04 in its runtime container (2026-11-04). A Lyrical source build was superseded by
+      NVIDIA's Isaac ROS Buildfarm (D2)
+- [x] Lyrical mode (b): native Lyrical on 24.04 from NVIDIA's Isaac ROS Buildfarm (`jp721-lyrical-isaac`, build side
+      done 2026-11-02, tests 13/13); runs on the Nano without installing anything (shipped runtime, F44). Against
+      mode (a): the detector node holds 0.63 vs. 0.68 GB, the shipped runtime takes 226 MB on disk vs. 10.8 GB for
+      the runtime image (2026-11-04)
+- [x] Document the supported matrix (L4T × Ubuntu × ROS) for L4T 39.2.1: README "Profiles", docs/system.md
+      Section 3.3 (2026-11-04)
 
 ### Phase 5: JetsonPlanner (postponed, separate project)
 JetsonPlanner (C++/Qt 6) is developed as its own repository later. This project stays integrable:

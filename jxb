@@ -275,7 +275,12 @@ def cmd_test(p: Profile, a) -> None:
         board.rsync(f"{out}/stage/", dest)
         env = board_ros_setup(p, board) + board_runtime_libs(p, board)
         ensure_board_libs(p, board, env + f"export LD_LIBRARY_PATH={dest}/lib:$LD_LIBRARY_PATH && ", [dest])
-        script = env + f"ROS_DISTRO={p.distro} bash {shlex.quote(dest)}/run_on_board.sh"
+        skip = ""
+        if uses_container(p, board):   # these steps initialize ONNX Runtime's CUDA EP (--ep tensorrt falls back to it)
+            skip = "ort_cuda ort_tensorrt ort_bench"
+            info(f"container mode: skipping {skip}: the board reset once while ONNX Runtime's CUDA EP initialized "
+                 "in a runtime container (docs/findings.md F56)")
+        script = env + f"ROS_DISTRO={p.distro} JXB_TEST_SKIP={shlex.quote(skip)} bash {shlex.quote(dest)}/run_on_board.sh"
         sys.exit(board.ssh(board_exec(p, board, script, login=False), tty=False, check=False))
 
 
