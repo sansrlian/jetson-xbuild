@@ -6,6 +6,8 @@ NVIDIA world. Roadmap and decisions: [PLAN.md](PLAN.md).
 
 **New here?** [docs/getting-started.md](docs/getting-started.md) covers the one-time setup, daily use and what to do
 when something goes wrong.
+How it works under the hood, with the design, measurements and lessons learned:
+[docs/system.md](docs/system.md) (typeset: [docs/latex/jxb.pdf](docs/latex/jxb.pdf)).
 
 What is different from the Renesas-style setup:
 
@@ -98,5 +100,5 @@ configurations in `vscode/<ws>.code-workspace`. Details: [docs/workflows.md](doc
 | `toolchain/jxb_trace.py`, `toolchain/jxb_vscode.py` | `jxb trace ...` and `jxb vscode init` |
 | `tools/board/` | helpers jxb copies to the board on demand (`jxb-ftrace.sh`) |
 | `traces/`, `vscode/` | recordings and generated VS Code workspaces (local, gitignored) |
-| `docs/` | [getting started](docs/getting-started.md), [workflows](docs/workflows.md), [findings and pitfalls](docs/findings.md) |
+| `docs/` | [getting started](docs/getting-started.md), [workflows](docs/workflows.md), [findings and pitfalls](docs/findings.md), [system architecture and internals](docs/system.md) ([PDF](docs/latex/jxb.pdf)) |
 | `attic/` | the earlier, untested scaffold (2026-10-26), kept for reference |
