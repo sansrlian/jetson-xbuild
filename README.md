@@ -4,6 +4,9 @@ Build ROS 2, CUDA, TensorRT and ONNX Runtime code for NVIDIA Jetson Orin on a st
 run and debug it on one or many boards. Inspired by the Renesas RZ/V2H RDK `xbuild` container, rebuilt for the
 NVIDIA world. Roadmap and decisions: [PLAN.md](PLAN.md).
 
+**New here?** [docs/getting-started.md](docs/getting-started.md) covers the one-time setup, daily use and what to do
+when something goes wrong.
+
 What is different from the Renesas-style setup:
 
 - **The sysroot is built from the board's own apt repositories, not mirrored from a board.** apt resolves the
@@ -95,5 +98,5 @@ configurations in `vscode/<ws>.code-workspace`. Details: [docs/workflows.md](doc
 | `toolchain/jxb_trace.py`, `toolchain/jxb_vscode.py` | `jxb trace ...` and `jxb vscode init` |
 | `tools/board/` | helpers jxb copies to the board on demand (`jxb-ftrace.sh`) |
 | `traces/`, `vscode/` | recordings and generated VS Code workspaces (local, gitignored) |
-| `docs/` | [workflows](docs/workflows.md), [findings and pitfalls](docs/findings.md) |
+| `docs/` | [getting started](docs/getting-started.md), [workflows](docs/workflows.md), [findings and pitfalls](docs/findings.md) |
 | `attic/` | the earlier, untested scaffold (2026-10-26), kept for reference |
