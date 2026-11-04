@@ -251,8 +251,11 @@ Like the Renesas RDK's VS Code tasks/launch configs, but as `jxb` commands first
       `--monitor` (tegrastats + per-process CPU/RSS by ancestry), `--bag` (+ CSV of numeric topics), `--with`
       helpers (synthetic camera `tools/board/jxb_image_pub.py`), VS Code tasks with module/argument settings
 - [x] Native or container for every board command (`--mode`): SAM's detector verified natively on Jazzy and on
-      Kilted (shipped ROS), and in the Kilted runtime container with TensorRT (+0.6 ms, +155 MB vs. native; F50,
-      F56). ONNX Runtime's CUDA EP inside the container reset the board once: open, needs root to read pstore
+      Kilted (shipped ROS), and in the Kilted runtime container with TensorRT (within the run-to-run variation of native runs; F50,
+      F56, F63). ONNX Runtime's CUDA EP inside the container reset the board once: open, needs root to read pstore
+- [x] Lyrical runtimes: bag recording (`--topics`) and clean SIGINT shutdown in the 26.04 container; `--monitor`
+      records `/proc/meminfo`, `--mem-guard`, `--rates`; 25-minute stack run: memory saturates, no leak
+      (2026-11-04, F68-F71)
 - [x] Inference baselines (`jxb trace bench`): ONNX Runtime CPU/CUDA/TensorRT EP vs. trtexec engines, fp32/fp16 and
       INT8 (PTQ/QAT/full INT8, YOLO26n) (F49); SAM node: ONNX Runtime 46 ms vs. TensorRT fp16 17 ms vs. INT8 15 ms,
       -0.9 GB RAM, -1 W (F50); plots and comparisons: `jxb trace plot|compare`; board lock for shared measurements

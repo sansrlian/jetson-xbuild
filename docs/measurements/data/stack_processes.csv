@@ -1,0 +1,72 @@
+run,pid,comm,category,cpu_share_cores,cpu_max_cores,rss_max_mb,alive_s
+"ORT CUDA EP, native",166961,component_conta,image pipeline containers,1.683,2.096,535.7,118.6
+"ORT CUDA EP, native",166964,object_detectio,detector,0.396,1.105,1617.7,118.6
+"ORT CUDA EP, native",166875,python3,synthetic camera,0.35600000000000004,1.0,278.9,121.8
+"ORT CUDA EP, native",166876,ros2,launch and measurement tools,0.276,0.429,110.1,122.8
+"ORT CUDA EP, native",166877,ros2,launch and measurement tools,0.07,0.154,90.5,121.8
+"ORT CUDA EP, native",166963,parking,other nodes,0.042,0.20199999999999999,52.2,117.6
+"ORT CUDA EP, native",166936,ros2,launch and measurement tools,0.018000000000000002,0.9520000000000001,62.2,120.7
+"ORT CUDA EP, native",166879,ros2,launch and measurement tools,0.013999999999999999,0.135,59.4,121.8
+"ORT CUDA EP, native",166969,throttle,other nodes,0.012,0.106,19.1,117.6
+"ORT CUDA EP, native",166993,throttle,other nodes,0.012,0.115,17.0,117.6
+"ORT CUDA EP, native",166996,throttle,other nodes,0.011000000000000001,0.106,19.1,117.6
+"ORT CUDA EP, native",166997,throttle,other nodes,0.011000000000000001,0.106,19.0,117.6
+"ORT CUDA EP, native",166967,foxglove_bridge,other nodes,0.008,0.48100000000000004,33.4,118.6
+"ORT CUDA EP, native",166965,throttle,other nodes,0.006999999999999999,0.096,19.0,117.6
+"ORT CUDA EP, native",166968,diagnostics_agg,other nodes,0.006,0.096,16.9,117.6
+"ORT CUDA EP, native",166966,teleop,other nodes,0.003,0.106,18.5,117.6
+"ORT CUDA EP, native",166962,traffic_light_d,other nodes,0.002,0.106,17.4,117.6
+"TRT fp16, native",82524,component_conta,image pipeline containers,1.6380000000000001,2.154,534.2,118.6
+"TRT fp16, native",82438,python3,synthetic camera,0.36200000000000004,1.01,279.4,122.7
+"TRT fp16, native",82527,object_detectio,detector,0.33299999999999996,0.609,771.9,118.6
+"TRT fp16, native",82439,ros2,launch and measurement tools,0.276,0.981,110.4,123.7
+"TRT fp16, native",82440,ros2,launch and measurement tools,0.075,0.981,81.2,122.7
+"TRT fp16, native",82526,parking,other nodes,0.039,0.136,60.2,117.5
+"TRT fp16, native",82441,ros2,launch and measurement tools,0.021,0.932,63.4,122.7
+"TRT fp16, native",82499,ros2,launch and measurement tools,0.018000000000000002,0.99,65.3,120.6
+"TRT fp16, native",82532,throttle,other nodes,0.012,0.109,20.0,117.5
+"TRT fp16, native",82557,throttle,other nodes,0.011000000000000001,0.1,18.0,117.5
+"TRT fp16, native",82562,throttle,other nodes,0.011000000000000001,0.1,19.9,117.5
+"TRT fp16, native",82565,throttle,other nodes,0.011000000000000001,0.109,19.9,117.5
+"TRT fp16, native",82530,foxglove_bridge,other nodes,0.009000000000000001,0.5,38.2,118.6
+"TRT fp16, native",82528,throttle,other nodes,0.006999999999999999,0.091,19.9,117.5
+"TRT fp16, native",82531,diagnostics_agg,other nodes,0.005,0.1,17.9,117.5
+"TRT fp16, native",82529,teleop,other nodes,0.004,0.091,19.4,117.5
+"TRT fp16, native",82525,traffic_light_d,other nodes,0.002,0.091,18.1,117.5
+"TRT fp16, container",98461,component_conta,image pipeline containers,1.526,2.029,539.3,118.3
+"TRT fp16, container",98349,python3,synthetic camera,0.374,1.0,287.1,123.5
+"TRT fp16, container",98464,object_detectio,detector,0.331,0.625,727.8,118.3
+"TRT fp16, container",98350,ros2,launch and measurement tools,0.284,0.961,112.5,123.5
+"TRT fp16, container",98351,ros2,launch and measurement tools,0.083,0.99,85.2,123.5
+"TRT fp16, container",98463,parking,other nodes,0.04,0.20199999999999999,56.5,117.2
+"TRT fp16, container",98352,ros2,launch and measurement tools,0.025,0.99,62.4,123.5
+"TRT fp16, container",98431,ros2,launch and measurement tools,0.018000000000000002,1.135,63.8,120.4
+"TRT fp16, container",98469,throttle,other nodes,0.012,0.096,19.4,117.2
+"TRT fp16, container",98473,throttle,other nodes,0.011000000000000001,0.106,19.3,117.2
+"TRT fp16, container",98513,throttle,other nodes,0.011000000000000001,0.106,19.1,117.2
+"TRT fp16, container",98470,throttle,other nodes,0.01,0.115,17.5,117.2
+"TRT fp16, container",98467,foxglove_bridge,other nodes,0.008,0.529,35.5,118.3
+"TRT fp16, container",98465,throttle,other nodes,0.006999999999999999,0.106,19.2,117.2
+"TRT fp16, container",98468,diagnostics_agg,other nodes,0.005,0.096,17.1,117.2
+"TRT fp16, container",98466,teleop,other nodes,0.003,0.096,18.2,117.2
+"TRT fp16, container",98462,traffic_light_d,other nodes,0.002,0.106,17.4,117.2
+"TRT fp16, native, per node*",175895,component_conta,image pipeline containers,1.34,1.885,540.0,119.4
+"TRT fp16, native, per node*",175834,python3,synthetic camera,0.33799999999999997,1.01,274.8,122.5
+"TRT fp16, native, per node*",175881,object_detectio,detector,0.314,0.596,644.5,119.4
+"TRT fp16, native, per node*",175913,component_conta,image pipeline containers,0.193,0.298,91.9,118.3
+"TRT fp16, native, per node*",175880,parking,other nodes,0.046,0.257,52.4,119.4
+"TRT fp16, native, per node*",175853,ros2,launch and measurement tools,0.019,0.951,62.4,121.5
+"TRT fp16, native, per node*",175909,component_conta,image pipeline containers,0.015,0.275,50.1,118.3
+"TRT fp16, native, per node*",175930,component_conta,image pipeline containers,0.013999999999999999,0.128,22.0,118.3
+"TRT fp16, native, per node*",175898,throttle,other nodes,0.013000000000000001,0.092,18.7,118.3
+"TRT fp16, native, per node*",175902,throttle,other nodes,0.013000000000000001,0.11,18.9,118.3
+"TRT fp16, native, per node*",175901,throttle,other nodes,0.012,0.10099999999999999,17.2,118.3
+"TRT fp16, native, per node*",175922,throttle,other nodes,0.01,0.092,18.8,118.3
+"TRT fp16, native, per node*",175885,foxglove_bridge,other nodes,0.008,0.47700000000000004,32.0,119.4
+"TRT fp16, native, per node*",175882,throttle,other nodes,0.006999999999999999,0.10099999999999999,19.2,118.3
+"TRT fp16, native, per node*",175886,diagnostics_agg,other nodes,0.005,0.10099999999999999,17.0,118.3
+"TRT fp16, native, per node*",175878,component_conta,image pipeline containers,0.003,0.107,16.2,119.4
+"TRT fp16, native, per node*",175879,traffic_light_d,other nodes,0.003,0.107,17.1,119.4
+"TRT fp16, native, per node*",175883,teleop,other nodes,0.003,0.10099999999999999,18.0,118.3
+"TRT fp16, native, per node*",175884,component_conta,image pipeline containers,0.003,0.11900000000000001,19.8,118.3
+"TRT fp16, native, per node*",175945,component_conta,image pipeline containers,0.003,0.128,19.6,118.3

@@ -25,7 +25,7 @@ inspired by the Renesas RZ/V2H RDK cross-build environment, whose structure it a
 a sysroot mirrored from a board, it removes. We describe the architecture and each mechanism in depth, report
 measurements on an Orin Nano 8 GB with JetPack 7.2.1 (for example, a 3.2x lower latency of the SAM detector model
 with a TensorRT fp16 engine than with ONNX Runtime's CUDA execution provider, and the full SAM autonomy stack running
-at 2.8 CPU cores, 2.2 GB and 8.4 W), and discuss the problems encountered during the implementation (62 recorded
+at 2.8 CPU cores, 2.1 GB and 8.4 W), and discuss the problems encountered during the implementation (62 recorded
 findings) and how they were resolved.
 
 ---
@@ -1311,21 +1311,22 @@ In the node, inference takes 46.4 ms p50 with ONNX Runtime's CUDA EP, 17.2 ms wi
 save about 1 W (6.9 vs. 5.9 W). The node adds 6-11 ms around the engine, and it runs a fixed 5 Hz loop, so the GPU is
 busy only 4-13 % of the time; the detection rate is bounded by that loop, not by the GPU (F50). Jazzy and Kilted
 give the same results within noise; under Lyrical (Isaac Buildfarm, native) memory and CPU are the same as well
-(1.83 GB with ONNX Runtime, 0.89 GB with TensorRT), but inference times could not be recorded there because bag
-recording does not yet work with the Lyrical runtimes (Section 12). The runtime container costs +0.6 ms and
-+155 MB compared to native execution.
+(1.83 GB with ONNX Runtime, 0.89 GB with TensorRT); its inference times were not recorded in that campaign, because
+bag recording failed with the Lyrical runtimes (fixed since, F68: a later run gives a median of 17.3 ms). The runtime container differs from the first
+native run by +0.6 ms and +0.14 GB, but a second native run differs from it by as much (+0.5 ms, +0.14 GB): the
+container's cost is within run-to-run variation ([measurements.pdf](latex/measurements.pdf), Section 3.3).
 
 ### 9.5 The full SAM stack
 
 The complete stack (`launch/launch.py module:=parking`: core, object detection, parking and traffic lights; Kilted;
 TensorRT fp16 detector) was run for 120 s with the synthetic camera at 30 fps, natively and in the runtime container.
 
-| Configuration | Processes | CPU [cores] | Session RSS [GB] | GPU mean / max [%] | Board power [W] | Max. temp. [°C] |
+| Configuration | Processes | CPU [cores] | Session RSS [GB, 1024 MB] | GPU mean / max [%] | Board power [W] | Max. temp. [°C] |
 |---|---:|---:|---:|---:|---:|---:|
-| native, TensorRT fp16 | 12 | 2.83 | 2.16 | 12.6 / 84 | 8.36 | 53.0 |
-| container, TensorRT fp16 | 12 | 2.75 | 2.12 | 12.5 / 88 | 8.32 | 53.2 |
-| native, ONNX Runtime CUDA EP | 12 | 2.93 | 2.99 | 26.8 / 99 | 9.39 | 54.5 |
-| native, one process per node | 18 | 2.36 | 1.97 | 13.5 / 88 | 8.11 | 53.6 |
+| native, TensorRT fp16 | 12 | 2.83 | 2.11 | 12.6 / 84 | 8.36 | 53.0 |
+| container, TensorRT fp16 | 12 | 2.75 | 2.07 | 12.5 / 88 | 8.32 | 53.2 |
+| native, ONNX Runtime CUDA EP | 12 | 2.93 | 2.92 | 26.8 / 99 | 9.39 | 54.5 |
+| native, one process per node | 18 | 2.36 | 1.92 | 13.5 / 88 | 8.11 | 53.6 |
 
 All processes started and stopped cleanly in every configuration. The composable-node container that hosts the
 image pipeline is the dominant consumer (1.6 cores, 534 MB); the detector takes 0.33 cores and 772 MB, the synthetic
@@ -1348,7 +1349,7 @@ images between CPU and GPU memory for every stage.
 The results support three conclusions about the system itself. First, the cross-built binaries are functionally
 identical to native builds: all tests pass on the board, and the SAM stack runs unchanged under three ROS
 distributions. Second, container mode is a viable alternative to native execution: the differences (+0.6 ms
-inference, +155 MB, ±3 % CPU) are within the noise of single runs. Third, the observability pipeline is cheap enough
+inference, +0.14 GB, ±3 % CPU) are no larger than those between two native runs. Third, the observability pipeline is cheap enough
 to use routinely (about 1 % of a core).
 
 The measurements have limitations. Each configuration was recorded once, on one board, which other users shared
@@ -1508,8 +1509,8 @@ Open issues of the current state:
 - **Kernel tracing on the board** has only been tested against a mock tracefs; a real run needs root, i.e. a sudo
   password typed by the user or explicit approval of the privileged-container route on the shared board.
 - **The reset of F56** is not explained (pstore needs root).
-- **Lyrical container runs**: `ros2 bag record` fails ("No storage could be initialized"), and the container needed
-  SIGKILL at shutdown (exit 137).
+- **Lyrical runtimes** (fixed 2026-11-04): `ros2 bag record` needs `--topics` there (F68), and SIGINT has to be
+  restored before `ros2 launch` because Ubuntu 26.04's `timeout` passes it on ignored (F69).
 - **Single board class.** Only an Orin Nano was available; AGX Orin and Thor (GPU variant `openrm`) are prepared in
   the profile format but untested.
 - **Missing pieces of the SAM stack**: the Basler Pylon SDK, ros2_control and Gazebo (a size decision for the
@@ -1616,8 +1617,7 @@ within a release are ABI-compatible (F35). Major differences mean the board is n
 **A node finds the wrong ONNX Runtime.** jxb's GPU build comes first on `LD_LIBRARY_PATH` only through jxb's
 environment (`jxb run`, `jxb launch`, `jxb ssh`); a plain SSH shell sees the board's CPU-only `/opt/onnxruntime`.
 
-**Known issues.** ONNX Runtime's CUDA EP in container mode (F56); Lyrical container bag recording and shutdown
-(Section 12); `pylon_camera_package` needs the Basler SDK; `micro_ros_agent` fails on Kilted (vendored Fast DDS
+**Known issues.** ONNX Runtime's CUDA EP in container mode (F56); `pylon_camera_package` needs the Basler SDK; `micro_ros_agent` fails on Kilted (vendored Fast DDS
 references `tinyxml2::tinyxml2`, F54). More in [getting-started.md](getting-started.md), Section 6.
 
 ## Appendix E: glossary

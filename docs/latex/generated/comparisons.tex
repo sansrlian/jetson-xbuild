@@ -1,0 +1,14 @@
+\begin{tabular}{@{}llrrrr@{}}
+\toprule
+Factor & Comparison ($x \to y$) & $\tilde y - \tilde x$ [ms] (95\,\% CI) & $\tilde y / \tilde x$ & Cliff's $\delta$ & $n_x / n_y$ \\
+\midrule
+backend & ORT CUDA EP $\to$ TensorRT fp16 (Jazzy) & -29.28 (-29.31 to -29.25) & 0.369 & -1.00 & 199/207 \\
+backend & TensorRT fp16 $\to$ INT8 (Jazzy) & -2.05 (-2.08 to -2.02) & 0.881 & -1.00 & 207/206 \\
+distro & Jazzy $\to$ Kilted (TensorRT fp16) & -0.10 (-0.14 to -0.06) & 0.994 & -0.37 & 207/210 \\
+distro & Jazzy $\to$ Kilted (ORT CUDA EP) & +0.07 (+0.03 to +0.11) & 1.001 & +0.23 & 199/202 \\
+mode & native $\to$ container (Kilted, TensorRT fp16) & +0.55 (+0.50 to +0.59) & 1.032 & +0.94 & 210/205 \\
+replicate & run $\to$ replicate (Kilted TensorRT fp16) & +0.48 (+0.42 to +0.51) & 1.028 & +0.92 & 210/131 \\
+load & alone $\to$ in the stack (TensorRT fp16) & +8.07 (+7.59 to +8.46) & 1.473 & +1.00 & 210/569 \\
+load & alone $\to$ in the stack (ORT CUDA EP) & +13.71 (+13.18 to +14.23) & 1.295 & +1.00 & 202/559 \\
+\bottomrule
+\end{tabular}

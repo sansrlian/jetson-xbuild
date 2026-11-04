@@ -1,0 +1,36 @@
+stamp,time,kind,label,profile,mode,wall_s,rc,note
+021327,02:13,nsys,ort-cuda,jazzy,--,22.901,0,valid
+021419,02:14,tegrastats,idle,jazzy,--,5.39,0,3 samples only
+022216,02:22,nsys,ort-trt16,jazzy,--,385.287,130,"interrupted (rc 130); kernel data valid, span recomputed"
+150743,15:07,launch,od-jazzy-native,jazzy,native,29.271,124,"excluded: sampler without ancestry markers, concurrent HIL load counted (F53)"
+151205,15:12,launch,od-ort-jazzy-native,jazzy,native,44.68,124,valid (replicate); bag without CSV export
+151546,15:15,bench,s0-fp32,jazzy,--,789.832,0,valid
+152917,15:29,bench,int8,jazzy,--,2107.65,0,valid
+195717,19:57,launch,od-onnx-jazzy-native,jazzy,native,65.383,124,excluded: no bag (topics passed as one argument)
+200054,20:00,launch,od-onnx-jazzy-native,jazzy,native,50.925,124,valid
+200152,20:01,launch,od-trt-fp16-jazzy-native,jazzy,native,50.187,124,valid
+200249,20:02,launch,od-trt-int8-qat-jazzy-native,jazzy,native,49.908,124,valid
+200437,20:04,launch,od-onnx-kilted-native,kilted,native,5.814,1,failed start: topic\_tools missing (F52)
+200453,20:04,launch,od-trt-fp16-kilted-native,kilted,native,5.786,1,failed start: topic\_tools missing (F52)
+201036,20:10,launch,od-onnx-kilted-native,kilted,native,50.994,124,valid
+201137,20:11,launch,od-trt-fp16-kilted-native,kilted,native,50.157,124,valid
+201949,20:19,launch,od-onnx-kilted-container,,--,,,board reset during ORT CUDA EP initialization in the container (F56)
+202324,20:23,launch,od-trt-fp16-kilted-container,kilted,container,51.104,124,valid
+202443,20:24,launch,od-onnx-lyrical-isaac-native,lyrical-isaac,native,5.553,1,failed start: osrf\_pycommon missing (F61)
+202458,20:24,launch,od-trt-fp16-lyrical-isaac-native,lyrical-isaac,native,5.501,1,failed start: osrf\_pycommon missing (F61)
+202840,20:28,launch,od-v2check-kilted-native,kilted,native,36.421,124,valid (replicate after the lifecycle rework)
+203108,20:31,launch,stack-parking-onnx-kilted-native,kilted,native,7.573,1,failed start: foxglove\_bridge missing (F60)
+203126,20:31,launch,stack-parking-trt-fp16-kilted-native,kilted,native,7.727,1,failed start: foxglove\_bridge missing (F60)
+203145,20:31,launch,stack-parking-trt-fp16-kilted-container,kilted,container,9.715,1,failed start: foxglove\_bridge missing (F60)
+203158,20:31,nsys,stack-parking-trt16-kilted,kilted,--,591.54,0,launch died at start (foxglove\_bridge); nsys waited 508 s for the process tree (F62)
+204310,20:43,launch,stack-parking-onnx-kilted-native,kilted,native,127.412,124,invalid: image pipeline produced no output (diagnostics stale)
+204528,20:45,launch,stack-parking-trt-fp16-kilted-native,kilted,native,127.205,124,valid
+205429,20:54,launch,stack-parking-trt-fp16-kilted-container,kilted,container,129.172,124,valid
+214618,21:46,launch,od-onnx-lyrical-isaac-native,lyrical-isaac,native,6.59,1,failed start: osrf\_pycommon missing (F61)
+214636,21:46,launch,od-trt-fp16-lyrical-isaac-native,lyrical-isaac,native,6.536,1,failed start: osrf\_pycommon missing (F61)
+215928,21:59,launch,od-trt-fp16-lyrical-container,lyrical,container,66.72,137,container needed SIGKILL at shutdown (rc 137); no bag
+220104,22:01,launch,od-onnx-lyrical-isaac-native,lyrical-isaac,native,46.07,124,valid; bag storage failed on Lyrical
+220202,22:02,launch,od-trt-fp16-lyrical-isaac-native,lyrical-isaac,native,45.619,124,valid; bag storage failed on Lyrical
+220300,22:03,launch,stack-parking-onnx-kilted-native,kilted,native,127.196,124,valid
+220509,22:05,launch,stack-parking-trt-fp16-kilted-native-nodes,kilted,native,126.654,124,"valid; no bag, no rate probes"
+220718,22:07,nsys,stack-parking-trt16-kilted,kilted,--,3846.498,0,"valid; GPU active 7.5--36 s, session open for 3800 s afterwards"

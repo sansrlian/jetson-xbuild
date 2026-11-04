@@ -1,0 +1,11 @@
+\begin{tabular}{@{}lrrrrrrrrr@{}}
+\toprule
+Configuration & CPU & RSS & GPU & $\bar P$ & $P_{\mathrm{dyn}}$ & Lanes & Undist. & Inference & RAM slope \\
+ & [cores] & [GB] & [\%] & [W] & [W] & [Hz] & [Hz] & p50/p99 [ms] & [MB/min] \\
+\midrule
+ORT CUDA EP, native & 2.93 & 2.92 & 29.7 & 9.70 & 4.68 & 23.2 & 19.8 & 60.2 / 78.0 & 215 \\
+TRT fp16, native & 2.83 & 2.11 & 13.8 & 8.54 & 3.52 & 23.3 & 20.0 & 25.1 / 36.3 & 284 \\
+TRT fp16, container & 2.75 & 2.07 & 14.0 & 8.51 & 3.50 & 23.3 & 20.5 & 25.3 / 39.9 & 255 \\
+TRT fp16, native, per node* & 2.36 & 1.92 & 14.3 & 8.25 & 3.24 & -- & -- & -- & 213 \\
+\bottomrule
+\end{tabular}

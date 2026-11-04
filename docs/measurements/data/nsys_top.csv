@@ -1,0 +1,79 @@
+trace,process,kind,name,count,total_ms
+ort_cuda,ort_bench,kernel,Kernel2,2968,352.1
+ort_cuda,ort_bench,kernel,op_generic_tensor_kernel,5712,349.97
+ort_cuda,ort_bench,kernel,_UnaryElementWise,4928,247.027
+ort_cuda,ort_bench,kernel,_5x_cudnn_ampere_scudnn_winograd_128x128_ldg1_ldg4_relu_tile148t_nt_v1,1232,166.105
+ort_cuda,ort_bench,kernel,nchwToNhwcKernel,1680,124.934
+ort_cuda,ort_bench,kernel,_ConcatKernelSameConcatDim,952,101.335
+ort_cuda,ort_bench,kernel,_5x_cudnn_ampere_scudnn_128x64_relu_xregs_large_nn_v1,56,74.503
+ort_cuda,ort_bench,kernel,Kernel,280,62.682
+ort_cuda,ort_bench,kernel,conv2d_grouped_direct_kernel,336,61.46
+ort_cuda,ort_bench,kernel,sm86_xmma_fprop_implicit_gemm_indexed_tf32f32_tf32f32_f32_nhwckrsc_nchw_tilesize64x32x64_stage4_warpsize2x2x1_g1_tensor16x8x8_alignc4_execute_kernel__5x_cudnn,336,42.175
+ort_cuda,ort_bench,cuda_api,cudaMemcpyAsync,672,962.384
+ort_cuda,ort_bench,cuda_api,cudaLaunchKernel,20888,621.813
+ort_cuda,ort_bench,cuda_api,cuLibraryLoadData,31,296.862
+ort_cuda,ort_bench,cuda_api,cudaMalloc,19,108.834
+ort_cuda,ort_bench,cuda_api,cuLaunchKernel,3080,76.14
+ort_cuda,ort_bench,cuda_api,cudaStreamSynchronize,326,33.915
+ort_cuda,ort_bench,cuda_api,cudaLaunchHostFunc,56,31.267
+ort_cuda,ort_bench,cuda_api,cuLibraryUnload,31,21.165
+ort_cuda,ort_bench,cuda_api,cuKernelGetName,19432,18.587
+ort_cuda,ort_bench,cuda_api,cuKernelGetFunction,2968,18.451
+ort_trt16,ort_bench,kernel,sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize128x128x32_stage4_warpsize2x2x1_g1_tensor16x8x16_simple_t1r1s1_linkable_execute_kernel_trt,4230,347.881
+ort_trt16,ort_bench,kernel,permutationKernelPLC3,6208,323.076
+ort_trt16,ort_bench,kernel,sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize128x128x32_stage4_warpsize2x2x1_g1_tensor16x8x16_t1r3s3_linkable_execute_kernel_trt,1692,204.052
+ort_trt16,ort_bench,kernel,sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize128x128x32_stage4_warpsize2x2x1_g1_tensor16x8x16_linkable_execute_kernel_trt,846,177.168
+ort_trt16,ort_bench,kernel,generatedNativePointwise,5078,162.608
+ort_trt16,ort_bench,kernel,sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize128x32x32_stage4_warpsize4x1x1_g1_tensor16x8x16_t1r3s3_linkable_execute_kernel_trt,2256,140.755
+ort_trt16,ort_bench,kernel,copyPackedKernel,4512,128.604
+ort_trt16,ort_bench,kernel,__myl_DivMulTran_0x03dbef298597c09dffa544e97ade2ae9,564,121.109
+ort_trt16,ort_bench,kernel,sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize256x64x32_stage3_warpsize4x1x1_g1_tensor16x8x16_t1r3s3,1974,92.901
+ort_trt16,ort_bench,kernel,sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize64x128x32_stage5_warpsize2x2x1_g1_tensor16x8x16_simple_t1r1s1_linkable_execute_kernel_trt,846,86.355
+ort_trt16,ort_bench,cuda_api,cudaMemcpyAsync,1217,778.11
+ort_trt16,ort_bench,cuda_api,cuLaunchKernelEx,30749,574.914
+ort_trt16,ort_bench,cuda_api,cudaLaunchKernel,13545,323.43
+ort_trt16,ort_bench,cuda_api,cuLaunchKernel,9308,152.557
+ort_trt16,ort_bench,cuda_api,cudaMalloc,15,100.804
+ort_trt16,ort_bench,cuda_api,cuModuleLoadData,24,28.006
+ort_trt16,ort_bench,cuda_api,cuModuleLoadFatBinary,33,22.266
+ort_trt16,ort_bench,cuda_api,cuLibraryLoadData,6,17.066
+ort_trt16,ort_bench,cuda_api,cudaMallocAsync,285,16.395
+ort_trt16,ort_bench,cuda_api,cudaStreamSynchronize,1414,15.126
+stack,image pipeline,kernel,warp,627,595.592
+stack,image pipeline,kernel,Remap,627,306.652
+stack,image pipeline,kernel,verticalMeanAndThresholdKernel,627,168.899
+stack,image pipeline,kernel,horizontalMeanKernel,627,111.421
+stack,image pipeline,kernel,filter2D,627,97.927
+stack,image pipeline,kernel,custom_crop_kernel,627,59.799
+stack,image pipeline,kernel,bgr_to_gray_nhwc,627,21.128
+stack,image pipeline,kernel,computeGaussianKernel,1,0.009
+stack,image pipeline,cuda_api,cudaMemcpy2DAsync,2509,2229.577
+stack,image pipeline,cuda_api,cudaFree,4397,2191.073
+stack,image pipeline,cuda_api,cudaMallocAsync,627,1875.399
+stack,image pipeline,cuda_api,cudaMalloc,4394,1635.202
+stack,image pipeline,cuda_api,cudaStreamSynchronize,628,856.148
+stack,image pipeline,cuda_api,cudaLaunchKernel,4390,305.061
+stack,image pipeline,cuda_api,cuLibraryLoadData,7,50.444
+stack,image pipeline,cuda_api,cuKernelGetName,4390,11.536
+stack,image pipeline,cuda_api,cudaFreeAsync,627,10.48
+stack,image pipeline,cuda_api,cuGetProcAddress,882,0.48
+stack,detector,kernel,permutationKernelPLC3,4773,234.45
+stack,detector,kernel,sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize128x128x32_stage4_warpsize2x2x1_g1_tensor16x8x16_t1r1s1_linkable_execute_kernel_trt,645,154.359
+stack,detector,kernel,sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize128x128x32_stage4_warpsize2x2x1_g1_tensor16x8x16_t1r3s3_linkable_execute_kernel_trt,774,132.307
+stack,detector,kernel,generatedNativePointwise,2322,105.163
+stack,detector,kernel,sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize128x128x32_stage4_warpsize2x2x1_g1_tensor16x8x16_simple_t1r1s1_linkable_execute_kernel_trt,1290,95.104
+stack,detector,kernel,sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize128x32x32_stage4_warpsize4x1x1_g1_tensor16x8x16_t1r3s3_linkable_execute_kernel_trt,1032,75.497
+stack,detector,kernel,sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize64x128x32_stage5_warpsize2x2x1_g1_tensor16x8x16_simple_t1r1s1_linkable_execute_kernel_trt,516,63.006
+stack,detector,kernel,__myl_DivMulTran_0x03dbef298597c09dffa544e97ade2ae9,258,59.69
+stack,detector,kernel,sm80_xmma_gemm_f16f16_f16f16_f16_nn_n_tilesize256x64x32_stage3_warpsize4x1x1_tensor16x8x16_execute_kernel_trt,1290,42.861
+stack,detector,kernel,sm80_xmma_fprop_implicit_gemm_f16f16_f16f16_f16_nhwckrsc_nhwc_tilesize256x64x32_stage3_warpsize4x1x1_g1_tensor16x8x16_t1r3s3_linkable_execute_kernel_trt,903,42.53
+stack,detector,cuda_api,cudaMemcpyAsync,604,409.895
+stack,detector,cuda_api,cuLaunchKernelEx,14061,338.519
+stack,detector,cuda_api,cudaFree,7,302.621
+stack,detector,cuda_api,cudaLaunchKernel,6678,234.254
+stack,detector,cuda_api,cuLaunchKernel,4311,103.43
+stack,detector,cuda_api,cuModuleLoadData,27,78.808
+stack,detector,cuda_api,cuLibraryLoadData,7,60.927
+stack,detector,cuda_api,cuModuleUnload,60,58.476
+stack,detector,cuda_api,cudaMallocAsync,239,54.734
+stack,detector,cuda_api,cuModuleLoadFatBinary,33,45.411

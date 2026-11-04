@@ -1,0 +1,13 @@
+quantity,value,unit,description
+frames_per_s,24.2469,1/s,frames the image pipeline processed per second
+gpu_ms_per_frame,2.1713,ms,GPU kernel time per frame
+api_ms_per_frame,14.6188,ms,blocking CUDA runtime API time per frame
+alloc_calls_per_frame,16.0207,calls,device allocations and frees per frame
+alloc_ms_per_frame,9.1103,ms,time in device allocations and frees per frame
+htod_mb_per_frame,3.0851,MB,host-to-device copies per frame
+dtoh_mb_per_frame,4.9376,MB,device-to-host copies per frame
+memcpy_cpu_share,0.1244,share,share of the image pipeline's CPU samples in memcpy
+gpu_busy_share,0.1112,share,GPU busy time in the active window
+kernel_overlap_share,0.0285,share,detector kernel time overlapping the image pipeline's
+detector_gpu_ms_per_inference,12.1923,ms,detector GPU kernel time per inference in the stack
+detector_upload_mb_per_inference,7.2119,MB,detector host-to-device copy per inference
