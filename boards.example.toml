@@ -12,6 +12,8 @@ gdb_port = 3000
 host = "192.168.178.83"
 product = "Orin Nano Super 8GB, JetPack 7.2.1"
 # profile = "jp721-kilted"
+# groups = ["lab"]        # jxb deploy @lab: every board of the group at once (also: NAME,NAME or all)
+# ros_domain_id = 11      # ROS_DOMAIN_ID on this board: keeps the ROS 2 traffic of several boards apart
 
 # [boards.agx-01]
 # host = "192.168.178.90"

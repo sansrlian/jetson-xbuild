@@ -17,9 +17,13 @@ installs nothing on them and writes only to `~/jxb/`.
 | Open a shell on the board | `jxb ssh BOARD` | same environment |
 | Run natively or in Docker | `jxb --mode native\|container ...` | container = the profile's runtime image, GPU included |
 | Debug a node | `jxb debug BOARD --pkg P --exe E` | gdbserver on the board, gdb here with full symbols |
+| Debug CUDA code | `jxb debug BOARD --pkg P --exe E --cuda` | cuda-gdbserver + cuda-gdb; GPU code needs the board user in group `debug` |
+| Show a board program's window here | `jxb gui BOARD -- rqt` | X11 over SSH, no desktop session on the board |
+| Work on several boards at once | `jxb deploy a,b`, `@group`, `all` | in parallel, with a result table; also run, launch, trace |
 | Work in VS Code | `jxb vscode init` | tasks for build, deploy, launch, trace; debug configurations |
 | Record load, power, GPU | `jxb launch --monitor`, `jxb trace ...` | Nsight Systems, tegrastats, kernel trace, benchmarks |
 | Look at the results | `jxb trace report\|plot\|compare` | text, `summary.json`, plots |
+| One timeline of recordings | `jxb trace perfetto ...` | for ui.perfetto.dev; several boards on one time axis |
 
 Profiles (all for JetPack 7.2.1, CUDA 13.2, TensorRT 10.16):
 

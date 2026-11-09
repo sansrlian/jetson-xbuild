@@ -2002,16 +2002,19 @@ Command & Purpose \\
 \path{jxb board list | check B} & inventory; compare a board's package versions with \code{packages.lock} \\
 \path{jxb deploy B [--ws WS] [--packages P ...] [--no-files]} & deploy a workspace \\
 \path{jxb run B -- CMD}, \code{jxb ssh B} & command or shell on the board with the deployment's environment \\
+\path{jxb gui B -- PROGRAM} & a board program as a window here (X11 over SSH) \\
 \path{jxb launch B [--packages ...] [--monitor] [--bag [T ...]] [--with CMD] [--duration S] -- TARGET} & deploy and launch, optionally recorded \\
-\path{jxb debug B --pkg P --exe E [--launch PKG FILE] [--server-only]} & remote debugging \\
-\path{jxb gdb [-- ARGS]} & cross gdb for the profile \\
+\path{jxb debug B --pkg P --exe E [--launch PKG FILE] [--server-only] [--cuda]} & remote debugging (\code{--cuda}: cuda-gdbserver and cuda-gdb) \\
+\path{jxb gdb [--cuda] [-- ARGS]} & cross gdb (or cuda-gdb) for the profile \\
 \path{jxb trace nsys | tegrastats | kernel | bench B ...} & recordings on the board \\
-\path{jxb trace report | plot | compare | list | gui} & analysis on the host \\
-\path{jxb vscode init -w WS [--board B --pkg P --exe E]} & VS Code workspace \\
+\path{jxb trace report | plot | compare | perfetto | list | gui} & analysis on the host; \code{perfetto}: one timeline of recordings \\
+\path{jxb vscode init -w WS [--board B ...] [--pkg P --exe E]} & VS Code workspace (several \code{--board}: debugging on all of them at once) \\
 \bottomrule
 \end{longtable}
 \noindent Global options: \code{--profile NAME}, \code{--mode auto|native|container}, \code{--dry-run} (prints the
-commands instead of running them).
+commands instead of running them). The board argument of \code{deploy}, \code{run}, \code{launch}, \code{test --board},
+\code{board check} and the recordings also takes \code{B,B}, \code{@GROUP} or \code{all}: the command runs on those
+boards at once, with a result table.
 
 \section{Configuration reference}\label{app:config}
 \begin{longtable}{@{}>{\raggedright\arraybackslash}p{6.4cm}>{\raggedright\arraybackslash}p{9.5cm}@{}}
@@ -2030,7 +2033,7 @@ Key & Meaning \\
 \code{[deploy] runtime}, \code{container} & shipped runtime extras; forced container mode \\
 \midrule
 \multicolumn{2}{@{}l}{\textit{Boards} (\code{boards.toml}, local)} \\
-\code{[defaults]}, \code{[boards.<name>]} & \code{host}, \code{user}, \code{ssh_port}, \code{deploy_dir}, \code{codename}, \code{gdb_port}, \code{nsys}, \code{trace_dir}, \code{measure_lock}, \code{trt_cache} \\
+\code{[defaults]}, \code{[boards.<name>]} & \code{host}, \code{user}, \code{ssh_port}, \code{deploy_dir}, \code{codename}, \code{gdb_port}, \code{nsys}, \code{trace_dir}, \code{measure_lock}, \code{trt_cache}, \code{cuda_gdbserver}, \code{groups} (for \code{@GROUP}), \code{ros_domain_id} \\
 \midrule
 \multicolumn{2}{@{}l}{\textit{Local defaults} (\code{jxb.toml}, local)} \\
 \code{profile}, \code{mode}, \code{workspaces} & defaults for \code{--profile}, \code{--mode} and the dev container \\

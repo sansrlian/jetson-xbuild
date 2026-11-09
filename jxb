@@ -17,9 +17,11 @@ cross-builds ROS 2 workspaces and talks to boards over SSH (keys only).
   jxb launch NAME [--monitor] [--bag] [--with CMD] [--duration S] -- PKG FILE | LAUNCH_FILE [ARGS]
                                       deploy + ros2 launch on the board, optionally recorded (traces/<board>/...)
   jxb ssh NAME                        interactive shell on the board, same environment as run
+  jxb gui NAME -- PROGRAM [ARGS ...]  a board program as a window here (X11 over SSH), e.g. rqt, nsys-ui
   jxb debug NAME --pkg P --exe E      gdbserver on the board (SSH-tunnelled) + cross gdb with sysroot and local
-        [--launch PKG FILE]           symbols; --launch starts E through a launch file (launch-prefix filter)
-  jxb gdb [-- GDB ARGS]               cross gdb for the profile (VS Code: toolchain/bin/jxb-gdb)
+        [--launch PKG FILE] [--cuda]  symbols; --launch starts E through a launch file (launch-prefix filter);
+                                      --cuda: cuda-gdbserver + cuda-gdb, for CUDA kernels too
+  jxb gdb [--cuda] [-- GDB ARGS]      cross gdb (or cuda-gdb) for the profile (VS Code: toolchain/bin/jxb-gdb)
   jxb trace nsys|tegrastats|kernel NAME [options] [-- CMD ...]
                                       Nsight Systems / tegrastats / ftrace on the board -> traces/<board>/...
   jxb trace report [DIR|BOARD|latest] | list   analysis of a recording (summary.json) / recordings
@@ -42,6 +44,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import tomllib
 from pathlib import Path
 
@@ -327,7 +330,8 @@ def cmd_board(p: Profile, a) -> None:
     if a.action == "list":
         inv = load_toml(REPO / "boards.toml")
         for name, cfg in inv.get("boards", {}).items():
-            print(f"{name:20} {cfg.get('host', '?'):18} {cfg.get('product', '')}")
+            groups = " ".join(f"@{g}" for g in cfg.get("groups", []))
+            print(f"{name:20} {cfg.get('host', '?'):18} {groups:16} {cfg.get('product', '')}")
         return
     board = Board(a.name, p)
     lock = p.sysroot / ".jxb/packages.lock"
@@ -472,22 +476,24 @@ def prepare_board(p: Profile, board: Board) -> None:
 
 
 def board_exec(p: Profile, board: Board, script: str, login: bool = True, tty: bool = False,
-               name: str | None = None) -> str:
+               name: str | None = None, x11: bool = False) -> str:
     """Remote command (for Board.ssh) that runs the shell script on the board: in bash, or for container profiles
     in the profile's runtime image with the GPU (CDI), host network/IPC (DDS) and <base> mounted at its path.
     The board's gdbserver and Nsight Systems are mounted in when present; with tty, closing the connection stops
-    the container (docker forwards the hangup, --init passes it on)."""
+    the container (docker forwards the hangup, --init passes it on). x11: the SSH session's forwarded display,
+    with the X cookie file in $jxb_xa (X11_COOKIE)."""
     shell = shlex.join(["bash", "-lc" if login else "-c", script])
     if not uses_container(p, board):
         return shell
     base = board.base
     optional = " ".join(f'$([ -e {path} ] && echo "-v {path}:{path}:ro")'
-                        for path in ("/usr/bin/gdbserver", "/opt/nvidia/nsight-systems"))
+                        for path in ("/usr/bin/gdbserver", CUDA_GDBSERVER, "/opt/nvidia/nsight-systems"))
     # GPU device nodes belong to video/render; by number, the image (the sysroot) has no such group names
     groups = " ".join(f'$(getent group {g} | cut -d: -f3 | sed "s/^/--group-add /")' for g in ("video", "render"))
+    display = '-e DISPLAY -e XAUTHORITY="$jxb_xa" -v "$jxb_xa:$jxb_xa:ro" ' if x11 else ""
     return (f"docker run --rm --init -i{'t' if tty else ''} {f'--name {name} ' if name else ''}"
             "--network host --ipc host --device nvidia.com/gpu=all "
-            f"--user $(id -u):$(id -g) {groups} -e HOME={base} -v {base}:{base} -w {base} {optional} "
+            f"--user $(id -u):$(id -g) {groups} -e HOME={base} -v {base}:{base} -w {base} {optional} {display}"
             f"{runtime_image(p)[0]} {shell}")
 
 
@@ -651,7 +657,10 @@ def board_ws_env(p: Profile, board: "Board", ws: Path) -> str:
     launch files find src/ and assets/) and jxb.toml's env / container_env ({ws} = that directory)."""
     root = f"{board.base}/{ws.name}"
     cfg = p.workspace(ws)
-    env = {"WORKSPACE_ROOT": root, **cfg.get("env", {}),
+    # boards.toml's ros_domain_id keeps the ROS 2 traffic of boards on one network apart; a workspace that must
+    # share a domain with the host (hardware in the loop) sets ROS_DOMAIN_ID in its env, which wins
+    domain = {"ROS_DOMAIN_ID": board.cfg["ros_domain_id"]} if "ros_domain_id" in board.cfg else {}
+    env = {"WORKSPACE_ROOT": root, **domain, **cfg.get("env", {}),
            **(cfg.get("container_env", {}) if uses_container(p, board) else {})}
     return "".join(f"export {k}={shlex.quote(str(v).replace('{ws}', root))} && " for k, v in env.items())
 
@@ -680,12 +689,28 @@ def gdb_init(p: Profile, install: Path) -> list[str]:
             f"set sysroot {p.sysroot}", f"set solib-search-path {':'.join(libdirs)}"]
 
 
+CUDA_GDBSERVER = "/usr/local/cuda/bin/cuda-gdbserver"   # JetPack's CUDA toolkit
+CUDA_GDB = "/usr/local/cuda/bin/cuda-gdb"               # the image's x86 build, debugs aarch64 targets
+
+
+def check_gpu_debugging(board: Board) -> None:
+    """Jetson lets only members of the group owning the GPU debugger device (debug) debug CUDA kernels; others get
+    CPU-only sessions (cuda-gdbserver: "Device node does not allow debugging for the current user")."""
+    node = "/dev/nvhost-dbg-gpu"
+    group = str(board.ssh(f"[ -e {node} ] && ! {{ [ -r {node} ] && [ -w {node} ]; }} && stat -c %G {node}",
+                          capture=True, check=False) or "").strip()
+    if group:
+        info(f"GPU debugging is off for {board.user} on {board.name} ({node} belongs to group {group}): CPU code "
+             f"can be debugged, CUDA kernels can't. Once, as root on the board: usermod -aG {group} {board.user}")
+
+
 def cmd_debug(p: Profile, a) -> None:
     """gdbserver on the board, gdb-multiarch in the container with the sysroot and the local (unstripped) binaries.
 
     gdbserver listens on the board's loopback only and is reached through the SSH session that starts it
     (local port forward), so nothing is exposed on the lab network and no firewall rule is needed.
-    With --launch, the node is started by its launch file and only the executable --exe runs under gdbserver."""
+    With --launch, the node is started by its launch file and only the executable --exe runs under gdbserver.
+    With --cuda, NVIDIA's cuda-gdbserver and cuda-gdb take their place (host and device code)."""
     board = Board(a.name, p)
     ws = Path(a.ws or Path.cwd()).resolve()
     install = ws / f"install-{p.name}"
@@ -694,7 +719,10 @@ def cmd_debug(p: Profile, a) -> None:
         fail(f"{local} not found (build and deploy first; use RelWithDebInfo/Debug for line info)")
     remote = f"{board.base}/{ws.name}/install/{a.pkg}/lib/{a.pkg}/{a.exe}"
     port = int(a.port or board.cfg.get("gdb_port", 3000))
-    gdbserver = ["gdbserver", "--once", f"127.0.0.1:{port}"]
+    gdbserver = [board.cfg.get("cuda_gdbserver", CUDA_GDBSERVER) if a.cuda else "gdbserver", "--once",
+                 f"127.0.0.1:{port}"]
+    if a.cuda:
+        check_gpu_debugging(board)
     if a.launch:
         server = shlex.join(["exec", "ros2", "launch", *board_launch_args(board, ws, [*a.launch, *a.cmd]),
                              "--launch-prefix", shlex.join(gdbserver),
@@ -722,7 +750,7 @@ def cmd_debug(p: Profile, a) -> None:
     gdb_args = ["-q", *(["--batch"] if a.batch else [])]
     for cmd in [f"file {local}", f"target remote 127.0.0.1:{port}", *(a.gdb_cmd or [])]:
         gdb_args += ["-ex", cmd]
-    rc = subprocess.run(gdb_command(p, ws, gdb_args)).returncode
+    rc = subprocess.run(gdb_command(p, ws, gdb_args, cuda=a.cuda)).returncode
     proc.terminate()
     sys.exit(rc)
 
@@ -737,22 +765,50 @@ def host_gdb() -> str | None:
     return None
 
 
-def gdb_command(p: Profile, ws: Path, args: list[str]) -> list[str]:
+def gdb_command(p: Profile, ws: Path, args: list[str], cuda: bool = False) -> list[str]:
     """Cross gdb set up for the profile's sysroot and the workspace's install tree: the host's gdb if it supports
-    aarch64, else gdb-multiarch in the container (same paths there; stdin stays attached for MI clients)."""
+    aarch64, else gdb-multiarch in the container (same paths there; stdin stays attached for MI clients). With
+    cuda, the container's cuda-gdb."""
     init = [x for cmd in gdb_init(p, ws / f"install-{p.name}") for x in ("-iex", cmd)]
-    gdb = host_gdb()
+    gdb = None if cuda else host_gdb()
     if gdb:
         return [gdb, *init, *args]
     ensure_up(p)
+    if cuda and subprocess.run(["docker", "exec", p.container, "test", "-x", CUDA_GDB]).returncode != 0:
+        fail(f"{p.container} has no cuda-gdb: rebuild its image (jxb --profile {p.name} image build), then "
+             "jxb up --recreate")
     tty = ["-t"] if sys.stdin.isatty() and sys.stdout.isatty() else []
-    return ["docker", "exec", "-i", *tty, "-w", str(ws), p.container, "gdb-multiarch", *init, *args]
+    return ["docker", "exec", "-i", *tty, "-w", str(ws), p.container, CUDA_GDB if cuda else "gdb-multiarch", *init,
+            *args]
 
 
 def cmd_gdb(p: Profile, a) -> None:
     """Cross gdb for the profile (see gdb_command); VS Code's cppdbg runs it through toolchain/bin/jxb-gdb."""
-    cmd = gdb_command(p, Path(a.ws or Path.cwd()).resolve(), a.cmd)
+    cmd = gdb_command(p, Path(a.ws or Path.cwd()).resolve(), a.cmd, cuda=a.cuda)
     os.execvp(cmd[0], cmd)
+
+
+# The X cookie of the session's forwarded display as a host-independent entry (family ffff) in a file of its own:
+# a container has its own host name, which the session's entry (<board>/unix:10) doesn't match.
+X11_COOKIE = 'jxb_xa=$(mktemp); xauth nlist "$DISPLAY" | sed -e "s/^..../ffff/" | xauth -f "$jxb_xa" nmerge -; '
+
+
+def cmd_gui(p: Profile, a) -> None:
+    """A program on the board as a window on this desktop (single windows, no desktop session on the board): SSH
+    X11 forwarding with the deployment's environment, natively or in the runtime container. Trusted forwarding
+    (-Y), since hosts often lack xauth."""
+    if not a.cmd:
+        fail("usage: jxb gui NAME -- PROGRAM [ARGS ...]")
+    if not os.environ.get("DISPLAY"):
+        fail("no X display on this host (DISPLAY is unset; on Wayland, XWayland provides one)")
+    board = Board(a.name, p)
+    script = board_env_script(p, board, Path(a.ws or Path.cwd()).resolve()) + shlex.join(a.cmd)
+    if uses_container(p, board):
+        remote = X11_COOKIE + board_exec(p, board, script, x11=True) + '; rc=$?; rm -f "$jxb_xa"; exit $rc'
+    else:
+        remote = board_exec(p, board, script)
+    info(f"{a.cmd[0]} on {board.name}, displayed here")
+    sys.exit(sh(["ssh", *board.ssh_opts, "-Y", board.target, remote], check=False).returncode)
 
 
 def cmd_ssh(p: Profile, a) -> None:
@@ -765,6 +821,65 @@ def cmd_ssh(p: Profile, a) -> None:
 
 
 # ----------------------------------------------------------------------------------------------- main
+# ----------------------------------------------------------------------------------------- several boards
+def board_names(spec: str) -> list[str]:
+    """The boards a NAME argument means: a board, a comma list, @GROUP (boards whose `groups` include it) or all."""
+    inv = load_toml(REPO / "boards.toml").get("boards", {})
+    names: list[str] = []
+    for part in filter(None, spec.split(",")):
+        if part == "all":
+            names += list(inv)
+        elif part.startswith("@"):
+            group = [n for n, c in inv.items() if part[1:] in c.get("groups", [])]
+            if not group:
+                fail(f"no board in group {part[1:]} (boards.toml: groups = [...])")
+            names += group
+        else:
+            names.append(part)
+    return list(dict.fromkeys(names))
+
+
+def fan_out(argv: list[str], spec: str, boards: list[str]) -> None:
+    """Runs this jxb command once per board, all at once: every output line carries its board's name, and a table
+    of exit codes and wall times follows. Ctrl-C reaches every run (same process group); jxb waits for them to
+    stop cleanly."""
+    i = argv.index(spec)
+    runs, saved = {}, []
+
+    def relay(b: str, proc: subprocess.Popen) -> None:
+        for line in proc.stdout:
+            print(f"[{b}] {line.rstrip()}", flush=True)
+            if "trace saved: " in line:   # the recordings, for one timeline of all boards
+                saved.append(Path(line.split("trace saved: ", 1)[1].strip()))
+
+    for b in boards:
+        proc = subprocess.Popen([sys.executable, str(REPO / "jxb"), *argv[:i], b, *argv[i + 1:]],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                errors="replace")
+        out = threading.Thread(target=relay, args=(b, proc), daemon=True)
+        out.start()
+        runs[b] = (proc, out, time.time())
+    width = max(map(len, boards))
+    rows = []
+    for b, (proc, out, t0) in runs.items():
+        while True:
+            try:
+                rc = proc.wait()
+                break
+            except KeyboardInterrupt:   # the runs got SIGINT as well and stop their boards' work
+                continue
+        out.join()
+        rows.append(f"  {b:{width}}  rc={rc:<4} {time.time() - t0:7.1f} s")
+    print(f"\n{len(boards)} boards:\n" + "\n".join(rows))
+    if len(saved) > 1:
+        jxb_trace.timeline(sorted(saved))
+    sys.exit(1 if any(proc.returncode for proc, _, _ in runs.values()) else 0)
+
+
+# jxb's commands whose board argument may name several boards (fan_out); ssh, gui and debug are interactive
+FAN_OUT = {"deploy", "run", "launch", "board", "test", "trace"}
+
+
 def main() -> None:
     global DRY_RUN
     # Started as a background job of a non-interactive shell (a script, a GUI), jxb inherits SIGINT ignored and
@@ -803,17 +918,21 @@ def main() -> None:
     s.add_argument("--gdb-cmd", action="append", help="gdb command to run after connecting (repeatable)")
     s.add_argument("--batch", action="store_true", help="non-interactive gdb (with --gdb-cmd)")
     s.add_argument("--server-only", action="store_true", help="only start gdbserver (for VS Code's cppdbg)")
+    s.add_argument("--cuda", action="store_true", help="cuda-gdbserver + cuda-gdb: CUDA kernels too")
     s.set_defaults(fn=cmd_debug, cmd=[])
-    s = sub.add_parser("gdb"); s.add_argument("--ws"); s.set_defaults(fn=cmd_gdb, cmd=[])
+    s = sub.add_parser("gdb"); s.add_argument("--ws"); s.add_argument("--cuda", action="store_true", help="cuda-gdb")
+    s.set_defaults(fn=cmd_gdb, cmd=[])
     s = sub.add_parser("ssh"); s.add_argument("name"); s.add_argument("--ws"); s.set_defaults(fn=cmd_ssh)
+    s = sub.add_parser("gui"); s.add_argument("name"); s.add_argument("--ws")
+    s.set_defaults(fn=cmd_gui, cmd=[])   # the program after "--" is split off before parsing
     jxb_trace.register(sub, sys.modules[__name__])
     jxb_vscode.register(sub, sys.modules[__name__])
     jxb_launch.register(sub, sys.modules[__name__])
     # build/exec/run/debug/gdb pass everything after the subcommand (and the board name) through untouched;
     # argparse would otherwise try to interpret colcon, remote or gdb options. jxb's own options come first.
-    own = {"run": {"--ws": 2}, "gdb": {"--ws": 2},
+    own = {"run": {"--ws": 2}, "gui": {"--ws": 2}, "gdb": {"--ws": 2, "--cuda": 1},
            "debug": {"--ws": 2, "--port": 2, "--pkg": 2, "--exe": 2, "--gdb-cmd": 2, "--launch": 3, "--batch": 1,
-                     "--server-only": 1}}
+                     "--server-only": 1, "--cuda": 1}}
     argv, passthrough = sys.argv[1:], None
     for i, tok in enumerate(argv):
         if tok in ("trace", "launch"):   # ... NAME [options] -- CMD: all of jxb's options come before "--"
@@ -821,8 +940,8 @@ def main() -> None:
                 j = argv.index("--", i)
                 argv, passthrough = argv[:j], argv[j:]
             break
-        if tok in ("build", "exec", "run", "debug", "gdb"):
-            keep = i + (2 if tok in ("run", "debug") else 1)
+        if tok in ("build", "exec", "run", "debug", "gdb", "gui"):
+            keep = i + (2 if tok in ("run", "debug", "gui") else 1)
             argv, passthrough = argv[:keep], argv[keep:]
             while passthrough[:1] and passthrough[0] in own.get(tok, {}):
                 n = own[tok][passthrough[0]]
@@ -838,8 +957,11 @@ def main() -> None:
     DRY_RUN = a.dry_run
     if a.command == "board" and a.action != "list" and not a.name:
         fail("usage: jxb board check NAME")
-    if shutil.which("docker") is None and a.command not in ("board", "deploy", "run", "ssh", "gdb", "debug", "trace",
-                                                            "vscode", "launch"):
+    spec = getattr(a, "board" if a.command == "test" else "name", None) if a.command in FAN_OUT else None
+    if spec and getattr(a, "trace_cmd", None) != "gui" and ("," in spec or spec == "all" or spec.startswith("@")):
+        fan_out(sys.argv[1:], spec, board_names(spec))
+    if shutil.which("docker") is None and a.command not in ("board", "deploy", "run", "ssh", "gui", "gdb", "debug",
+                                                            "trace", "vscode", "launch"):
         fail("docker not found")
     prof = Profile(a.profile)
     prof.mode = a.mode or prof.mode

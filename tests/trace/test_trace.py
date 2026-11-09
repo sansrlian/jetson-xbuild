@@ -271,6 +271,71 @@ class BoardStateTest(unittest.TestCase):
             self.assertTrue((Path(d) / "board_state_end.txt").exists())
 
 
+class PerfettoTest(unittest.TestCase):
+    """A recording whose board clock is at 1970 (offset -1.8e9 s) lands on the host's time axis."""
+    OFFSET = -1_800_000_000.0     # board - host
+    BOARD_START = 1_200_000.0     # board wall clock at the start; its uptime then: 500 s
+    HOST_START = BOARD_START - OFFSET
+
+    def recording(self, d: Path) -> Path:
+        r = d / "nano" / "20261109-120000-launch-x"
+        (r / "bag/csv").mkdir(parents=True)
+        (r / "meta.json").write_text(json.dumps({"board": "nano", "started": "2026-11-09T12:00:00+01:00",
+                                                 "interval_ms": 500, "command": ["x"],
+                                                 "clock": {"offset_s": self.OFFSET, "rtt_s": 0.003}}))
+        (r / "board_state_start.txt").write_text(f"clock:{self.BOARD_START} 500.0\n" + BOARD_STATE)
+        (r / "tegrastats.csv").write_text("t_s,cpu_avg_pct,gpu_pct,ram_used_mb,power_vdd_in_mw,temp_tj_c\n"
+                                          "0.0,10,0,1800,5000,49.0\n0.5,20,50,1810,6000,49.5\n")
+        (r / "procstat.log").write_text("R 1\nT 501.00\n")   # first sample 1 s after the start
+        (r / "summary.json").write_text(json.dumps({"processes": {"session": [
+            {"pid": 7, "comm": "detector", "series": [[0.0, 50.0, 100.0], [1.0, 60.0, 110.0]]}]}}))
+        (r / "rates.log").write_text(json.dumps({"probe": "/img", "t": self.BOARD_START + 3, "hz": 30.0}) + "\n")
+        (r / "bag/csv/inference.csv").write_text(f"t_ns,value\n{int((self.BOARD_START + 4) * 1e9)},11.5\n")
+        con = sqlite3.connect(r / "report.sqlite")
+        con.executescript(f"""
+            CREATE TABLE TARGET_INFO_SESSION_START_TIME (utcEpochNs INT);
+            INSERT INTO TARGET_INFO_SESSION_START_TIME VALUES ({int((self.BOARD_START + 2) * 1e9)});
+            CREATE TABLE StringIds (id INT, value TEXT);
+            INSERT INTO StringIds VALUES (1, 'conv');
+            CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start INT, end INT, shortName INT, streamId INT);
+            INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (1000000, 1250000, 1, 7);
+            CREATE TABLE NVTX_EVENTS (start INT, end INT, text TEXT, textId INT);
+            INSERT INTO NVTX_EVENTS VALUES (0, 2000000, 'infer', NULL);
+        """)
+        con.close()
+        return r
+
+    def test_one_time_axis(self):
+        import jxb_perfetto
+        with tempfile.TemporaryDirectory() as d:
+            rec = self.recording(Path(d))
+            old = Path(d) / "nano" / "20261109-115959-tegrastats"   # no board clock: host start, to the second
+            old.mkdir()
+            (old / "meta.json").write_text(json.dumps({"board": "nano", "started": "2026-11-09T11:59:59+01:00"}))
+            (old / "tegrastats.csv").write_text("t_s,cpu_avg_pct\n0.0,5\n")
+            out = Path(d) / "t.json"
+            contents = jxb_perfetto.export([rec, old], out)
+            ev = json.loads(out.read_text())["traceEvents"]
+        t0 = min(self.HOST_START, jxb_perfetto.dt.datetime.fromisoformat("2026-11-09T11:59:59+01:00").timestamp())
+
+        def at(name: str) -> list[float]:   # seconds after the start of the recording
+            return [round((e["ts"] / 1e6 + t0 - self.HOST_START), 3) for e in ev if e.get("name") == name
+                    and e.get("pid") == 1]
+        self.assertTrue(contents[str(rec)]["board_clock_mapped"])
+        self.assertFalse(contents[str(old)]["board_clock_mapped"])
+        self.assertEqual(at("CPU"), [0.5, 1.0])                     # first sample one interval after the start
+        self.assertEqual(at("CPU detector (7)"), [1.0, 2.0])         # uptime 501 s = 1 s after the start
+        self.assertEqual(at("rate /img"), [3.0])
+        self.assertEqual(at("bag inference"), [4.0])
+        self.assertEqual(at("conv"), [2.001])                        # nsys session start + 1 ms
+        self.assertEqual(at("infer"), [2.0])
+        kernel = next(e for e in ev if e.get("name") == "conv")
+        self.assertEqual((kernel["dur"], kernel["tid"]), (250.0, 1007))
+        self.assertIn("1 GPU kernels", contents[str(rec)]["contains"])
+        self.assertEqual([e["args"]["name"] for e in ev if e.get("name") == "process_name"],
+                         ["nano: 20261109-120000-launch-x", "nano: 20261109-115959-tegrastats"])
+
+
 class MeminfoTest(unittest.TestCase):
     def test_trend(self):
         lines = ["R 100"]

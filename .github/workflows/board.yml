@@ -1,0 +1,37 @@
+# Sysroot build and the proof packages (jxb test: CUDA, TensorRT, ONNX Runtime, ROS 2), optionally run on a board.
+# A sysroot takes 16-19 GB, more than GitHub's runners have, so this runs on demand on a self-hosted runner with
+# the label "jxb": Docker, SSH keys for the boards, and boards.toml (+ jxb.toml) placed once in its checkout.
+# The checkout is not cleaned, so sysroots/, .work/ and the local config stay between runs.
+name: sysroot and proof packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Profile"
+        default: jp721-kilted
+        type: choice
+        options: [jp721-jazzy, jp721-kilted, jp721-lyrical, jp721-lyrical-isaac]
+      board:
+        description: "Board from the runner's boards.toml for the on-board tests (empty: host only)"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: [self-hosted, linux, x64, jxb]
+    env:
+      PROFILE: ${{ inputs.profile }}
+      BOARD: ${{ inputs.board }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+      - name: xbuild image
+        run: ./jxb --profile "$PROFILE" image build
+      - name: Sysroot
+        run: ./jxb --profile "$PROFILE" sysroot build
+      - name: Proof packages
+        run: ./jxb --profile "$PROFILE" test ${BOARD:+--board "$BOARD"}

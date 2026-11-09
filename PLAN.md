@@ -247,8 +247,11 @@ Like the Renesas RDK's VS Code tasks/launch configs, but as `jxb` commands first
       Gazebo in the sysroots (F74; `pylon_camera_package` needs Basler's SDK). On the Nano the develop deploy resolves
       every library, `ekf_node` runs (with SAM's `ekf_core` fix) and object_detection finds the CUDA EP plugin from
       jxb's ORT (with a path override). For SAM: the two patches in `.work/ws/` (F55)
-- [ ] CUDA kernel debugging: `cuda-gdbserver` is on the board; needs a host `cuda-gdb` that supports aarch64
-      targets (check NVIDIA's x86 package) and a launch config for it
+- [x] CUDA kernel debugging: NVIDIA's x86 `cuda-gdb` (in the xbuild image) debugs aarch64 through the board's
+      `cuda-gdbserver`; `jxb debug --cuda`, `jxb gdb --cuda`, VS Code configuration; verified on the CPU side with
+      SAM's detector (2026-11-09, F75)
+- [ ] GPU code under `jxb debug --cuda`: needs the board user in group `debug` (root, the owners' decision), then
+      a kernel breakpoint test
 - [x] Renesas-style launch mode: `jxb launch` (deploy of selected packages + the workspace's launch/config/
       assets files, `ros2 launch` of a package's or the workspace's launch file, clean SIGINT stop, process groups),
       `--monitor` (tegrastats + per-process CPU/RSS by ancestry), `--bag` (+ CSV of numeric topics), `--with`
@@ -269,16 +272,30 @@ Like the Renesas RDK's VS Code tasks/launch configs, but as `jxb` commands first
 - [ ] Kernel trace of the stack (`jxb trace kernel`): needs root on the board (sudo password typed by the user)
 
 ### Phase 2: Fleet and tracing
-- [ ] `orin-agent` v0 (health, deploy, run, logs, trace) + CLI on top
-- [ ] Multi-board deploy and concurrent debugging with ≥2 boards
-- [ ] Synchronized nsys + ros2_tracing + tegrastats capture on N boards, Perfetto reports
+- [ ] `orin-agent` v0 (health, deploy, run, logs, trace) + CLI on top. Open questions first: a daemon on a shared
+      board (persistent, a network port with mTLS) vs. jxb's SSH-only model so far; the protobuf API shared with
+      JetsonPlanner
+- [x] Multi-board deploy and concurrent debugging: every board command takes `NAME,NAME`, `@GROUP` or `all` (in
+      parallel, result table), `ros_domain_id` per board, VS Code debug configurations per board + compound; tried
+      with two names for one Nano (2026-11-09, F78)
+- [ ] The same with a second physical board (parallel recordings; the lock serializes names of one board)
+- [x] Synchronized capture on N boards with Perfetto timelines: recordings measure their board's clock offset
+      (~2 ms) and start time; `jxb trace perfetto` (tegrastats, processes, memory, rates, bag topics, nsys GPU
+      kernels and NVTX), merged by itself for recordings of several boards (2026-11-09, F77)
+- [ ] ros2_tracing (LTTng) in the timelines: needs LTTng on the board (apt on a shared board: the owners' decision)
 - [x] Lyrical mode (a): 26.04 Lyrical container on JetPack, GPU through the board's CDI spec; CUDA/cuDNN/TensorRT
       come from the board via nvidia-container-toolkit (no CUDA 13.2/TensorRT for 26.04 sbsa, findings F23); hybrid
       sysroot (26.04 + Lyrical + r39.2 dev debs); deployment in a mounted volume. Verified on the Nano: test suite,
       SAM's detector with TensorRT, bag recording and clean shutdown (F68, F69, F72) (2026-11-04)
-- [ ] CI: shellcheck, image builds, sysroot build, proof packages
+- [x] CI: `.github/workflows/ci.yml` (shellcheck, Python syntax, analysis tests, CLI dry runs), `image.yml`
+      (xbuild image of every profile when `docker/` or `profiles/` change), `board.yml` (sysroot + proof packages on
+      a self-hosted runner, on demand: 16-19 GB per sysroot is more than GitHub's runners have) (2026-11-09)
+- [ ] Register a self-hosted runner (label `jxb`) for `board.yml`; first CI runs on GitHub after the push
 
 ### Phase 3: Golden image (stock JetPack + bundle)
+Open question before this phase: W4 installs our `.deb`s with apt, but the shared Nano stays stock so far (jxb ships
+everything to `~/jxb`). Either a bundle that installs to `~/jxb` (what `jxb deploy` does today, plus versioning),
+or apt on boards the team owns alone. `provision` and the clone image also need a board that may be reflashed.
 - [ ] Bundle build: apt repo + container images + config, versioned with the sysroot manifest
 - [ ] `provision` command: fresh stock JetPack Nano → fully provisioned in one run
 - [ ] Optional clone/massflash image from a provisioned board
@@ -305,8 +322,12 @@ JetsonPlanner (C++/Qt 6) is developed as its own repository later. This project 
 - the target-side `orin-agent` API (Phase 2) is defined once (protobuf) and used by both `jxb` and JetsonPlanner.
 
 ### Bonus (when the core phases are done)
-- [ ] W8 remote GUI: check the Nano's desktop session (Wayland/Xorg); `board gui` for single windows over SSH;
-      on-demand RDP desktop; measure RAM/CPU cost
+- [x] W8 remote GUI: the Nano's session checked (GDM login screen on `graphical.target`, GNOME 46 Wayland + Xorg,
+      ~330 MB); single windows with `jxb gui NAME -- PROGRAM` (native and container); cost measured: `nsys-ui`
+      441 MB, `xterm` 10 MB, forwarding CPU negligible when idle (2026-11-09, F76)
+- [ ] W8 on-demand RDP desktop (`gnome-remote-desktop` 46.3 is installed): needs credentials and an enabled
+      service on the board, and `multi-user.target` by default would free the login screen's memory: both the
+      owners' decision
 
 ---
 

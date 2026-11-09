@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Cross gdb for VS Code's cppdbg ("miDebuggerPath"): runs `jxb gdb`, which sets the profile's sysroot and the
 # workspace's library paths. cppdbg adds its own options (--interpreter=mi, ...) around "miDebuggerArgs", so jxb's
-# options are passed as --jxb-profile=NAME and --jxb-ws=DIR and may appear anywhere.
+# options are passed as --jxb-profile=NAME, --jxb-ws=DIR and --jxb-cuda (cuda-gdb) and may appear anywhere.
 set -euo pipefail
-jxb_args=() gdb_args=() ws=""
+jxb_args=() gdb_args=() ws="" cuda=""
 for arg in "$@"; do
     case "$arg" in
         --jxb-profile=*) jxb_args+=(--profile "${arg#*=}") ;;
         --jxb-ws=*) ws="${arg#*=}" ;;
+        --jxb-cuda) cuda=--cuda ;;
         *) gdb_args+=("$arg") ;;
     esac
 done
-exec "$(dirname "$(realpath "$0")")/../../jxb" "${jxb_args[@]+"${jxb_args[@]}"}" gdb ${ws:+--ws "$ws"} -- \
+exec "$(dirname "$(realpath "$0")")/../../jxb" "${jxb_args[@]+"${jxb_args[@]}"}" gdb ${ws:+--ws "$ws"} $cuda -- \
     "${gdb_args[@]+"${gdb_args[@]}"}"

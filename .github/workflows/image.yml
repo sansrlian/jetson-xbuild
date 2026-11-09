@@ -1,0 +1,31 @@
+# The xbuild image of every profile, when its recipe or the profiles change (or on demand). Builds only; nothing is
+# pushed to a registry.
+name: xbuild image
+
+on:
+  push:
+    branches: [main]
+    paths: ["docker/**", "profiles/**", "toolchain/jxb_profile.py", ".github/workflows/image.yml"]
+  pull_request:
+    paths: ["docker/**", "profiles/**", "toolchain/jxb_profile.py", ".github/workflows/image.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [jp721-jazzy, jp721-kilted, jp721-lyrical, jp721-lyrical-isaac]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        # the image is ~3.5 GB, its build needs about twice that
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+      - name: Build
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: ./jxb --profile "$PROFILE" image build

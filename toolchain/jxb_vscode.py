@@ -16,6 +16,10 @@ or in VS Code's settings UI): jxb.profile, jxb.mode (auto | native | container),
 jxb.executable, jxb.launchPackage + jxb.launchFile (or an empty package and a launch file of the workspace such
 as launch/launch.py), jxb.launchArgs, jxb.launchWith (helper next to the launch, e.g. a synthetic camera),
 jxb.bagTopics, jxb.benchModels, jxb.gdbPort, jxb.traceSeconds.
+
+Several --board options debug on several boards at once: the first is jxb.board, every further one gets its own
+gdbserver task and debug configuration (with its boards.toml gdb_port), and the compound "jxb: debug node on all
+boards" starts them together.
 """
 from __future__ import annotations
 
@@ -29,8 +33,9 @@ def _cfg(key: str) -> str:
     return "${config:jxb.%s}" % key
 
 
-def generate(wsf: str) -> tuple[dict, dict]:
-    """tasks.json and launch.json content; wsf is how VS Code names the ROS 2 workspace folder."""
+def generate(wsf: str, others: list[tuple[str, int]] = ()) -> tuple[dict, dict]:
+    """tasks.json and launch.json content; wsf is how VS Code names the ROS 2 workspace folder, others are further
+    boards (name, gdb port) to debug on at the same time."""
     jxb = str(J.REPO / "jxb")
     P, B, PKG, EXE = _cfg("profile"), _cfg("board"), _cfg("package"), _cfg("executable")
     LP, LF, SEC, MODE = _cfg("launchPackage"), _cfg("launchFile"), _cfg("traceSeconds"), _cfg("mode")
@@ -49,9 +54,9 @@ def generate(wsf: str) -> tuple[dict, dict]:
                 "command": f"'{jxb}' --profile {P} --mode {MODE} {cmdline}", "options": {"cwd": wsf},
                 "problemMatcher": [], "presentation": {"panel": "dedicated", "clear": True}}
 
-    def gdbserver(label: str, extra: list[str], detail: str) -> dict:
+    def gdbserver(label: str, extra: list[str], detail: str, board: str = B) -> dict:
         # background task: VS Code starts the debugger once gdbserver listens (forwarded to 127.0.0.1:gdbPort)
-        return task(label, ["debug", B, "--ws", wsf, "--pkg", PKG, "--exe", EXE, *extra, "--server-only"], detail,
+        return task(label, ["debug", board, "--ws", wsf, "--pkg", PKG, "--exe", EXE, *extra, "--server-only"], detail,
                     isBackground=True,
                     problemMatcher={"owner": "jxb", "pattern": {"regexp": "^__jxb_never_matches__$"},
                                     "background": {"activeBegin": True, "beginsPattern": "Listening on port",
@@ -81,6 +86,11 @@ def generate(wsf: str) -> tuple[dict, dict]:
               f"--bag {_cfg('bagTopics')} -- {target}",
               "as above plus ros2 bag record of jxb.bagTopics (empty: all topics)"),
         gdbserver("jxb: gdbserver node", [], "jxb.executable under gdbserver (preLaunchTask)"),
+        gdbserver("jxb: cuda-gdbserver node", ["--cuda"],
+                  "jxb.executable under cuda-gdbserver, for CUDA kernels too (preLaunchTask)"),
+        *(gdbserver(f"jxb: gdbserver node ({name})", ["--port", str(port)],
+                    f"jxb.executable under gdbserver on {name} (preLaunchTask)", board=name)
+          for name, port in others),
         {**shell("jxb: gdbserver node in launch",
                  f"debug {B} --ws '{wsf}' --pkg {PKG} --exe {EXE} --launch \"{LP}\" {LF} --server-only "
                  f"-- {_cfg('launchArgs')}",
@@ -117,14 +127,14 @@ def generate(wsf: str) -> tuple[dict, dict]:
                   "inputs": [{"id": "jxbStopLaunch", "type": "command", "command": "workbench.action.tasks.terminate",
                               "args": "jxb: gdbserver node in launch"}]}
 
-    def debug(name: str, pre: str, post: str | None = None) -> dict:
+    def debug(name: str, pre: str, post: str | None = None, cuda: bool = False, port: int | None = None) -> dict:
         c = {"name": name, "type": "cppdbg", "request": "launch",
              "program": f"{wsf}/install-{P}/{PKG}/lib/{PKG}/{EXE}", "args": [], "cwd": wsf,
              "MIMode": "gdb", "targetArchitecture": "arm64",
-             # jxb-gdb sets the profile's sysroot and the workspace's library paths
+             # jxb-gdb sets the profile's sysroot and the workspace's library paths (--jxb-cuda: cuda-gdb)
              "miDebuggerPath": str(J.REPO / "toolchain/bin/jxb-gdb"),
-             "miDebuggerArgs": f"--jxb-profile={P} --jxb-ws={wsf}",
-             "miDebuggerServerAddress": f"127.0.0.1:{_cfg('gdbPort')}",
+             "miDebuggerArgs": f"--jxb-profile={P} --jxb-ws={wsf}" + (" --jxb-cuda" if cuda else ""),
+             "miDebuggerServerAddress": f"127.0.0.1:{port or _cfg('gdbPort')}",
              "stopAtEntry": False, "externalConsole": False,
              "setupCommands": [{"description": "pretty printing", "text": "-enable-pretty-printing",
                                 "ignoreFailures": True}],
@@ -135,8 +145,14 @@ def generate(wsf: str) -> tuple[dict, dict]:
 
     launch_json = {"version": "0.2.0", "configurations": [
         debug("jxb: debug node on board", "jxb: gdbserver node"),
+        debug("jxb: debug node on board (CUDA)", "jxb: cuda-gdbserver node", cuda=True),
         debug("jxb: debug node in launch file on board", "jxb: gdbserver node in launch",
-              "jxb: stop gdbserver launch")]}
+              "jxb: stop gdbserver launch"),
+        *(debug(f"jxb: debug node on {name}", f"jxb: gdbserver node ({name})", port=port) for name, port in others)]}
+    if others:
+        launch_json["compounds"] = [{"name": "jxb: debug node on all boards",
+                                     "configurations": ["jxb: debug node on board",
+                                                        *(f"jxb: debug node on {name}" for name, _ in others)]}]
     return tasks_json, launch_json
 
 
@@ -146,11 +162,20 @@ def cmd_init(p, a) -> None:
         J.fail(f"{ws} has no src/: not a ROS 2 workspace")
     inv = J.load_toml(J.REPO / "boards.toml")
     boards = inv.get("boards", {})
-    board = a.board or p.local.get("board") or next(iter(boards), "")
-    if board and board not in boards:
-        J.fail(f"unknown board {board}; known: {', '.join(boards) or '(none, see boards.example.toml)'}")
-    port = int({**inv.get("defaults", {}), **boards.get(board, {})}.get("gdb_port", 3000))
-    given = {"jxb.board": a.board, "jxb.package": a.pkg, "jxb.executable": a.exe,
+    board = (a.board or [None])[0] or p.local.get("board") or next(iter(boards), "")
+    for b in [board, *(a.board or [])[1:]]:
+        if b and b not in boards:
+            J.fail(f"unknown board {b}; known: {', '.join(boards) or '(none, see boards.example.toml)'}")
+
+    def port_of(b: str) -> int:
+        return int({**inv.get("defaults", {}), **boards.get(b, {})}.get("gdb_port", 3000))
+    port = port_of(board)
+    others = [(b, port_of(b)) for b in dict.fromkeys((a.board or [])[1:]) if b != board]
+    ports = [port, *(p_ for _, p_ in others)]
+    if len(set(ports)) < len(ports):   # each session forwards its board's gdbserver to 127.0.0.1:<port> here
+        J.fail(f"boards {', '.join([board, *(b for b, _ in others)])} need different gdb_port values in boards.toml "
+               f"to be debugged at once (now: {', '.join(map(str, ports))})")
+    given = {"jxb.board": (a.board or [None])[0], "jxb.package": a.pkg, "jxb.executable": a.exe,
              "jxb.launchPackage": a.launch[0] if a.launch else None,
              "jxb.launchFile": a.launch[1] if a.launch else None}
     defaults = {"jxb.profile": p.name, "jxb.mode": "auto", "jxb.board": board, "jxb.package": "",
@@ -159,7 +184,7 @@ def cmd_init(p, a) -> None:
                 "jxb.traceSeconds": 10}
 
     if a.into_workspace:
-        tasks, launch = generate("${workspaceFolder}")
+        tasks, launch = generate("${workspaceFolder}", others)
         settings = {**defaults, **{k: v for k, v in given.items() if v is not None}}
         files = {ws / ".vscode/tasks.json": tasks, ws / ".vscode/launch.json": launch,
                  ws / ".vscode/settings.json": settings}
@@ -183,7 +208,7 @@ def cmd_init(p, a) -> None:
                 J.fail(f"{out} is not plain JSON (comments?); --force regenerates it and drops your settings")
     # Generated parts are replaced; settings keep what was edited, except values given on the command line.
     settings = {**defaults, **old.get("settings", {}), **{k: v for k, v in given.items() if v is not None}}
-    tasks, launch = generate(f"${{workspaceFolder:{ws.name}}}")
+    tasks, launch = generate(f"${{workspaceFolder:{ws.name}}}", others)
     doc = {"folders": [{"path": str(ws), "name": ws.name}, {"path": str(J.REPO), "name": "jxb"}],
            "settings": settings, "tasks": tasks, "launch": launch,
            "extensions": {"recommendations": ["ms-vscode.cpptools"]}}
@@ -205,7 +230,8 @@ def register(sub, jxb) -> None:
     vs = s.add_subparsers(dest="vscode_cmd", required=True)
     i = vs.add_parser("init", help="workspace file with jxb tasks and launch configurations")
     i.add_argument("-w", "--workspace", help="ROS 2 workspace (default: current directory)")
-    i.add_argument("--board", help="default board (setting jxb.board)")
+    i.add_argument("--board", action="append", help="default board (setting jxb.board); repeat it for debug "
+                   "configurations on several boards at once")
     i.add_argument("--pkg", help="package to run/debug (setting jxb.package)")
     i.add_argument("--exe", help="executable to run/debug (setting jxb.executable)")
     i.add_argument("--launch", nargs=2, metavar=("PKG", "FILE"), help="launch file (jxb.launchPackage/File)")

@@ -8,6 +8,8 @@
       [-- CMD ...]   ftrace via tracefs (scheduler, IRQs, CPU frequency/idle). Needs root on the board: by
       default sudo asks for your password in the terminal (jxb never handles passwords)
   jxb trace report [DIR|BOARD|latest] [--json]      analysis of a recording (writes summary.json)
+  jxb trace perfetto [DIR|BOARD|latest ...]         one timeline of recordings (several boards: one time axis)
+                                                     for https://ui.perfetto.dev (jxb_perfetto.py)
   jxb trace list [--json]
   jxb trace gui NAME [--tool nsys|ncu]               the board's Nsight GUI as a window here (X11 over SSH)
 
@@ -124,6 +126,7 @@ def _with_tegrastats(log: str, interval: int, command: str) -> str:
 # mode, CPU policies, devfreq devices (GPU, EMC = bwmgr, video and vision engines), CPU idle states, GPU rail gating,
 # fan, temperatures. jetson_clocks shows as minimum = maximum and disabled idle states.
 BOARD_STATE = (
+    'echo "clock:$(date +%s.%N) $(cut -d" " -f1 /proc/uptime)"; '   # the board's wall clock and uptime: time axis
     'echo "nvpmodel:$(nvpmodel -q 2>/dev/null | sed -n "s/^NV Power Mode: //p")"; '
     'echo "nvfancontrol:$(systemctl is-active nvfancontrol 2>/dev/null)"; c=/sys/devices/system/cpu; '
     "grep -H . $c/cpufreq/policy*/{scaling_governor,scaling_min_freq,scaling_max_freq,scaling_cur_freq,"
@@ -144,6 +147,34 @@ def with_board_state(remote: str, command: str) -> str:
     return f"bash -c {q(script)}"
 
 
+def clock_offset(board, rounds: int = 8) -> dict | None:
+    """The board's clock against this host's (offset_s = board - host): one SSH connection answers a few requests
+    with the board's time; the fastest round trip bounds the error (rtt_s / 2). Boards may run without NTP (the
+    Nano's clock is at 1970), so this is what puts their timestamps on a common time axis."""
+    if J.DRY_RUN:
+        return None
+    proc = subprocess.Popen(["ssh", *board.ssh_opts, board.target, "while read -r _; do date +%s.%N; done"],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    best = None
+    try:
+        for i in range(rounds + 1):
+            t0 = time.time()
+            proc.stdin.write("x\n")
+            proc.stdin.flush()
+            line = proc.stdout.readline()
+            t1 = time.time()
+            if not line.strip():
+                return None
+            if i and (best is None or t1 - t0 < best[1]):   # the first answer includes the connection setup
+                best = (float(line) - (t0 + t1) / 2, t1 - t0)
+    except (OSError, ValueError):
+        return None
+    finally:
+        proc.kill()
+        proc.wait()
+    return {"offset_s": round(best[0], 6), "rtt_s": round(best[1], 6)} if best else None
+
+
 def _save(board, p, a, kind: str, local: Path, remote: str, started: str, wall: float, rc: int, **extra) -> None:
     _fetch(board, remote, local)
     if J.DRY_RUN:
@@ -152,7 +183,7 @@ def _save(board, p, a, kind: str, local: Path, remote: str, started: str, wall: 
         board.ssh(f"rm -rf {q(remote)}", check=False)
     meta = {"kind": kind, "board": board.name, "host": board.host, "profile": p.name, "ros_distro": p.distro,
             "label": a.label, "command": list(a.cmd), "started": started, "wall_s": round(wall, 3), "rc": rc,
-            **extra}
+            "clock": clock_offset(board), **extra}
     (local / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
     summary = analyze(local)
     print(json.dumps(summary, indent=2) if a.json else format_summary(summary))
@@ -936,7 +967,13 @@ def board_state(path: Path) -> dict | None:
         val = val.strip()
         if not sep:
             continue
-        if key == "nvpmodel":
+        if key == "clock":
+            try:
+                wall, uptime = map(float, val.split())
+                s["clock"] = {"wall_s": wall, "uptime_s": uptime}
+            except ValueError:
+                pass
+        elif key == "nvpmodel":
             s["nvpmodel"] = val or None
         elif key == "nvfancontrol":
             s["fan"]["nvfancontrol"] = val or None
@@ -1253,6 +1290,26 @@ def cmd_plot(p, a) -> None:
     sys.exit(rc)
 
 
+def timeline(dirs: list[Path], out: Path | None = None) -> Path:
+    """Perfetto timeline of recordings (jxb_perfetto.py): DIR/perfetto.json for one, traces/compare/<stamp>/ for
+    several (e.g. the boards of one `jxb trace ... NAME,NAME` run)."""
+    import jxb_perfetto   # imports this module
+    for d in dirs:
+        analyze(d)
+    if out is None:
+        out = (dirs[0] if len(dirs) == 1 else
+               J.REPO / "traces" / "compare" / dt.datetime.now().strftime("%Y%m%d-%H%M%S")) / "perfetto.json"
+    for d, c in jxb_perfetto.export(dirs, out).items():
+        print(f"  {Path(d).parent.name}/{Path(d).name}: from +{c['starts_at_s']} s, {', '.join(c['contains']) or 'no data'}"
+              + ("" if c["board_clock_mapped"] else " (no board clock: placed by its host start time, to the second)"))
+    J.info(f"timeline: {out} (open https://ui.perfetto.dev and drop the file in)")
+    return out
+
+
+def cmd_perfetto(p, a) -> None:
+    timeline([_resolve(t) for t in (a.targets or ["latest"])], Path(a.out).resolve() if a.out else None)
+
+
 def cmd_compare(p, a) -> None:
     """Several recordings side by side (e.g. native vs container, ONNX Runtime vs TensorRT): traces/compare/<name>/."""
     dirs = [_resolve(t) for t in a.targets]
@@ -1346,6 +1403,10 @@ def register(sub, jxb) -> None:
     s.add_argument("targets", nargs="+")
     s.add_argument("--name", help="name of the comparison (default: timestamp)")
     s.set_defaults(fn=cmd_compare)
+    s = ts.add_parser("perfetto", help="one Perfetto timeline of recordings: [DIR|BOARD|latest ...]")
+    s.add_argument("targets", nargs="*")
+    s.add_argument("--out", help="JSON file (default: DIR/perfetto.json, several: traces/compare/<stamp>/)")
+    s.set_defaults(fn=cmd_perfetto)
     s = ts.add_parser("list", help="recordings in traces/")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_list)

@@ -68,16 +68,20 @@ ssh-copy-id nvidia@192.168.178.83
 ./jxb test --board nano-lab            # run the cross-built tests on the board (only writes ~/jxb/<profile>)
 ./jxb deploy nano-lab --ws ~/ros2_ws   # rsync install-<profile>/ to the board
 ./jxb run nano-lab -- ros2 run object_detection_package object_detection
+./jxb deploy @lab --ws ~/ros2_ws       # several boards at once: NAME,NAME, @GROUP or all (result table)
+./jxb gui nano-lab -- rqt              # a board program's window here (X11 over SSH)
 ```
 
 ## Debug, trace, VS Code
 
 ```bash
 ./jxb debug nano-lab --pkg object_detection_package --exe object_detection   # gdbserver (SSH-tunnelled) + cross gdb
+./jxb debug nano-lab --pkg object_detection_package --exe object_detection --cuda   # cuda-gdb, CUDA kernels too
 ./jxb trace nsys nano-lab --tegrastats -- ros2 run object_detection_package object_detection
 ./jxb trace tegrastats nano-lab --live                                         # load, clocks, power, temperatures
 ./jxb trace kernel nano-lab --live --top                                       # ftrace scheduler stats (sudo on the board)
 ./jxb trace report nano-lab                                                    # analysis of the latest recording
+./jxb trace perfetto nano-lab                                                  # timeline for ui.perfetto.dev
 ./jxb vscode init -w ~/ros2_ws --pkg object_detection_package --exe object_detection
 ```
 

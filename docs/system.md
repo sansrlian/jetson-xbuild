@@ -1554,15 +1554,18 @@ log do, is what makes the system maintainable.
 | `jxb board list \| check B` | inventory; compare a board's package versions with `packages.lock` |
 | `jxb deploy B [--ws WS] [--packages P ...] [--no-files]` | deploy a workspace |
 | `jxb run B -- CMD`, `jxb ssh B` | command / shell on the board with the deployment's environment |
+| `jxb gui B -- PROGRAM` | a board program as a window here (X11 over SSH) |
 | `jxb launch B [--packages ...] [--monitor] [--bag [T ...]] [--with CMD] [--duration S] -- TARGET` | deploy and launch, optionally recorded |
-| `jxb debug B --pkg P --exe E [--launch PKG FILE] [--server-only]` | remote debugging |
-| `jxb gdb [-- ARGS]` | cross gdb for the profile |
+| `jxb debug B --pkg P --exe E [--launch PKG FILE] [--server-only] [--cuda]` | remote debugging (`--cuda`: cuda-gdbserver + cuda-gdb) |
+| `jxb gdb [--cuda] [-- ARGS]` | cross gdb (or cuda-gdb) for the profile |
 | `jxb trace nsys \| tegrastats \| kernel \| bench B ...` | recordings on the board |
-| `jxb trace report \| plot \| compare \| list \| gui` | analysis on the host |
-| `jxb vscode init -w WS [--board B --pkg P --exe E]` | VS Code workspace |
+| `jxb trace report \| plot \| compare \| perfetto \| list \| gui` | analysis on the host; `perfetto`: one timeline of recordings |
+| `jxb vscode init -w WS [--board B ...] [--pkg P --exe E]` | VS Code workspace (several `--board`: debugging on all of them at once) |
 
 Global options: `--profile NAME`, `--mode auto|native|container`, `--dry-run` (prints commands instead of running
-them). Details: [workflows.md](workflows.md).
+them). The board argument of `deploy`, `run`, `launch`, `test --board`, `board check` and the recordings also takes
+`B,B`, `@GROUP` or `all`: the command runs on those boards at once, with a result table. Details:
+[workflows.md](workflows.md).
 
 ## Appendix B: configuration reference
 
@@ -1580,7 +1583,8 @@ them). Details: [workflows.md](workflows.md).
 | `[deploy]` `runtime`, `container` | shipped runtime extras; force container mode |
 
 **`boards.toml`** (local): `[defaults]` and `[boards.<name>]` with `host`, `user`, `ssh_port`, `deploy_dir`,
-`codename`, `gdb_port`, `nsys`, `trace_dir`, `measure_lock`, `trt_cache`.
+`codename`, `gdb_port`, `nsys`, `trace_dir`, `measure_lock`, `trt_cache`, `cuda_gdbserver`, `groups` (for `@GROUP`),
+`ros_domain_id`.
 
 **`jxb.toml`** (local): `profile`, `mode`, `workspaces`, `[sysroot] extra_sets`, and per workspace
 `[workspace.<dir>]` `files` (deployed source-tree files), `env` (board environment) and `container_env`

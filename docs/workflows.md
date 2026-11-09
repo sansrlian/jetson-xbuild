@@ -155,6 +155,52 @@ Debugging, under the hood:
   `/usr/bin/gdbserver` is mounted into the runtime container.
 - gdb's warning `.dynamic section ... not at the expected address` for `libblas.so.3`/`liblapack.so.3` is harmless:
   the sysroot's alternatives pick OpenBLAS, the board has the reference libraries (findings F43).
+- Several boards at once: `jxb vscode init --board nano-lab --board agx-01 ...` adds a gdbserver task and a debug
+  configuration per further board (with its `boards.toml` `gdb_port`; the ports must differ) and the compound
+  `jxb: debug node on all boards`, which starts the sessions together.
+
+### CUDA kernels: `jxb debug --cuda`
+
+```bash
+./jxb debug nano-lab --pkg object_detection_package --exe object_detection --cuda
+```
+
+The board's `cuda-gdbserver` (JetPack's CUDA toolkit) and the image's x86 `cuda-gdb` take the place of gdbserver and
+gdb-multiarch; the x86 build debugs aarch64 targets through the same SSH tunnel, with the same sysroot setup.
+`jxb gdb --cuda` and the VS Code configuration `jxb: debug node on board (CUDA)` (cppdbg with `--jxb-cuda`) use it
+too. Build the package with `-G` in its CUDA flags for source-level kernel debugging. Jetson lets only members of
+the `debug` group (owner of `/dev/nvhost-dbg-gpu`) debug GPU code: otherwise jxb says so, and the session debugs
+the CPU side only. Once per board, with root: `usermod -aG debug <user>` (findings F75).
+
+## GUI programs on the board: `jxb gui`
+
+```bash
+./jxb gui nano-lab -- rqt
+./jxb gui nano-lab -- nsys-ui
+```
+
+Runs a program on the board with the deployment's environment and shows its window here, over SSH X11 forwarding
+(trusted, `-Y`): one window, no desktop session on the board. In container mode the runtime container gets the
+forwarded display and a copy of the session's X cookie that is valid for any host name (the container has its
+own). On the Nano a forwarded `nsys-ui` holds 441 MB, an `xterm` 10 MB; the forwarding itself costs no
+measurable CPU while the window is idle (F76). `jxb trace gui --tool nsys|ncu` opens the Nsight GUIs this way.
+
+## Several boards at once
+
+```bash
+./jxb deploy nano-lab,agx-01            # a list
+./jxb launch @lab --monitor --duration 60 -- object_detection_package object_detection_launch.py
+./jxb run all -- uptime                 # every board in boards.toml
+```
+
+Wherever a command takes a board (`deploy`, `run`, `launch`, `test --board`, `board check`, `trace nsys|tegrastats|
+kernel|bench`), it also takes a comma list, `@GROUP` (boards with `groups = ["GROUP"]` in `boards.toml`) or `all`.
+jxb then runs the command once per board, all at once: every output line carries its board's name, a table of
+exit codes and wall times follows, and Ctrl-C stops every run cleanly. Recordings of several boards are merged into
+one timeline (`jxb trace perfetto`, below). `ros_domain_id` in a board's `boards.toml` entry sets its
+`ROS_DOMAIN_ID`, so the ROS 2 traffic of boards on one network stays apart; a workspace that must share a domain
+with the host (hardware in the loop) sets `ROS_DOMAIN_ID` in its `jxb.toml` env, which wins. Interactive commands
+(`ssh`, `gui`, `debug`) take one board; VS Code debugs several (above).
 
 ## Tracing
 
@@ -247,6 +293,27 @@ scheduler statistics, and the distributions of bag topics such as the inference 
 --name NAME` puts recordings side by side (e.g. native vs. container, ONNX Runtime vs. TensorRT) in
 `traces/compare/NAME/compare.md` + `.png` + `.json`. Both use matplotlib in the dev container.
 
+### Timelines: `jxb trace perfetto`
+
+`jxb trace perfetto [DIR|BOARD|latest ...]` puts recordings on one time axis as a Perfetto timeline (Chrome JSON
+trace format): `DIR/perfetto.json` for one recording, `traces/compare/<stamp>/perfetto.json` for several. A
+recording on several boards (`jxb trace ... a,b`, `jxb launch a,b --monitor`) writes it by itself. Each recording
+is a group of tracks:
+
+- its board state at the start
+- tegrastats counters: CPU, GPU, RAM, board power, Tj
+- CPU and RSS of the session's processes, and memory counters
+- topic rates and numeric bag topics
+- for nsys: the GPU kernels per stream and the NVTX ranges
+
+Open it in https://ui.perfetto.dev (Open trace file); the UI processes it in the browser.
+
+The time axis is this host's clock. Boards often run without NTP (the Nano's clock is at 1970), so every
+recording measures its board's clock offset over one SSH connection (the fastest of eight round trips, ~3 ms on
+the lab network, so ~2 ms error; meta.json `clock`) and notes the board's clock and uptime when it starts
+(`board_state_start.txt`). Board-clock times (nsys, bag, rates) and uptimes (process samples) map through those.
+Recordings from before 2026-11-09 have neither and are placed by their host start time, to the second (F77).
+
 ### Shared boards: the measurement lock
 
 Recorded commands (`trace nsys|tegrastats|kernel|bench`, `launch --monitor`) take `~/jxb/.measure.lock` on the
@@ -265,6 +332,9 @@ board. Other tools can take part: `flock -w 3600 ~/jxb/.measure.lock <command>`.
 | Nsight Compute (GPU performance counters) | yes |
 | gdbserver starting the program (also from a launch file) | no |
 | gdbserver attaching to a running process | yes (`ptrace_scope = 1`) |
+| `jxb debug --cuda` on CPU code | no |
+| `jxb debug --cuda` on CUDA kernels | once: the user into group `debug` |
+| `jxb gui` (X11 forwarding) | no |
 
 ## Machine-readable results (JetsonPlanner)
 
@@ -277,3 +347,17 @@ All commands are non-interactive with fixed paths, so a GUI can drive them and r
 - `jxb trace tegrastats BOARD --live --json`: one JSON object per sample (JSON lines).
 - `jxb trace kernel BOARD --live --top --json`: one JSON object per second of trace time.
 - Recording commands take `--json` to print `summary.json` at the end instead of the text report.
+- `jxb trace perfetto ... --out FILE`: the timeline of recordings as Chrome JSON trace events.
+
+## CI
+
+`.github/workflows/`:
+
+| Workflow | Runs on | When | What |
+|---|---|---|---|
+| `ci.yml` | GitHub | every push and pull request | shellcheck (warnings and errors) of every shell script, Python syntax, the analysis tests (`tests/trace`), CLI dry runs of `launch`, `trace tegrastats` and `vscode init` for the native profiles |
+| `image.yml` | GitHub | changes to `docker/`, `profiles/` (or on demand) | the xbuild image of every profile, built, not pushed |
+| `board.yml` | a self-hosted runner labelled `jxb` | on demand | image, sysroot (16-19 GB, more than GitHub's runners have) and the proof packages (`jxb test`), optionally on a board |
+
+The self-hosted runner needs Docker, SSH keys for the boards and `boards.toml` (+ `jxb.toml`) placed once in its
+checkout; the workflow doesn't clean the checkout, so sysroots, `.work/` and the local config stay between runs.

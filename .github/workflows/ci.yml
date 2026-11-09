@@ -1,0 +1,67 @@
+# Checks that need no board, sysroot or image: shell scripts, Python syntax, the analysis tests and the CLI's
+# command assembly (dry runs). The image build is image.yml, the sysroot and the proof packages are board.yml.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck (warnings and errors)
+        # every tracked shell script outside attic/, found by extension or shebang
+        run: |
+          git ls-files -z -- . ':!attic' | while IFS= read -r -d '' f; do
+            case "$f" in
+              *.sh) echo "$f" ;;
+              *) head -n1 "$f" 2>/dev/null | grep -qE '^#!.*\b(ba)?sh\b' && echo "$f" ;;
+            esac
+          done > shell-files.txt
+          cat shell-files.txt
+          xargs -a shell-files.txt shellcheck -S warning
+      - name: Python syntax
+        run: |
+          git ls-files -z -- . ':!attic' | while IFS= read -r -d '' f; do
+            case "$f" in
+              *.py) echo "$f" ;;
+              *) head -n1 "$f" 2>/dev/null | grep -qE '^#!.*python' && echo "$f" ;;
+            esac
+          done > python-files.txt
+          cat python-files.txt
+          python3 - <<'EOF'
+          import ast, sys
+          for f in open("python-files.txt").read().split():
+              ast.parse(open(f).read(), f)
+          print("all files parse")
+          EOF
+
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Analysis tests (tests/trace)
+        run: python3 -m unittest discover -s tests/trace -v
+      - name: CLI dry runs
+        # a board with a known Ubuntu release, so no command needs to ask it (dry runs only print)
+        run: |
+          printf '[defaults]\n[boards.ci]\nhost = "ci.invalid"\ncodename = "noble"\n' > boards.toml
+          ./jxb --help > /dev/null
+          for p in jp721-jazzy jp721-kilted jp721-lyrical-isaac; do
+            ./jxb --profile "$p" --dry-run launch ci --no-deploy --monitor --rates /chatter --duration 5 \
+              -- demo_nodes_cpp talker.launch.py > /dev/null
+            ./jxb --profile "$p" --dry-run trace tegrastats ci --duration 5 > /dev/null
+          done
+          mkdir -p "$RUNNER_TEMP/ws/src"
+          ./jxb --profile jp721-kilted vscode init -w "$RUNNER_TEMP/ws" --board ci --pkg demo --exe demo
+          python3 -c 'import json, sys; [json.load(open(f)) for f in sys.argv[1:]]' vscode/*.code-workspace

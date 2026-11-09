@@ -59,7 +59,8 @@ RUN codename=$(. /etc/os-release && echo "$VERSION_CODENAME") \
 
 # x86_64 nvcc. Target headers and libraries (targets/sbsa-linux) are bind-mounted from the sysroot at runtime,
 # so the device code links against exactly what the board runs. The board's CUDA 13.2 nvcc exists only in the
-# ubuntu2404 repo; its packages also install on newer Ubuntu.
+# ubuntu2404 repo; its packages also install on newer Ubuntu. The x86 cuda-gdb debugs aarch64 targets through the
+# board's cuda-gdbserver (jxb debug --cuda).
 RUN curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
         -o /tmp/cuda-keyring.deb \
     && dpkg -i /tmp/cuda-keyring.deb && rm /tmp/cuda-keyring.deb \
@@ -70,6 +71,7 @@ RUN curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu24
         cuda-cudart-${CUDA_DASH}=${CUDA_PKG_VERSION} \
         cuda-driver-dev-${CUDA_DASH}=${CUDA_PKG_VERSION} \
         cuda-cuobjdump-${CUDA_DASH} cuda-nvdisasm-${CUDA_DASH} cuda-nvprune-${CUDA_DASH} \
+        cuda-gdb-${CUDA_DASH}=${CUDA_PKG_VERSION} \
     && apt-mark hold cuda-nvcc-${CUDA_DASH} cuda-crt-${CUDA_DASH} cuda-cudart-dev-${CUDA_DASH} \
     && rm -rf /var/lib/apt/lists/* \
     && cd /usr/local/cuda-${CUDA_DASH/-/.} \
