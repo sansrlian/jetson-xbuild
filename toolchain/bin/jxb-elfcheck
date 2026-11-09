@@ -76,6 +76,13 @@ def sysroot_dirs(sysroot: Path, distro: str, cuda: str, cuda_target: str) -> lis
             f"/usr/local/cuda-{cuda}/targets/{cuda_target}/lib", "/opt/onnxruntime/lib", "/opt/acados/lib"]
     for conf in sorted((sysroot / "etc/ld.so.conf.d").glob("*.conf")):
         dirs += [l.strip() for l in conf.read_text().splitlines() if l.strip().startswith("/")]
+    # ament vendor packages (gz_*_vendor, ...) keep their libraries in opt/<pkg>/lib, which their environment hook
+    # puts on LD_LIBRARY_PATH when the ROS setup is sourced
+    for dsv in sorted((sysroot / f"opt/ros/{distro}/share").glob("*/environment/vendor_package.dsv")):
+        for line in dsv.read_text().splitlines():
+            parts = line.split(";")
+            if len(parts) == 3 and parts[1] == "LD_LIBRARY_PATH":
+                dirs.append(f"/opt/ros/{distro}/{parts[2]}")
     return [sysroot / d.lstrip("/") for d in dict.fromkeys(dirs)]
 
 

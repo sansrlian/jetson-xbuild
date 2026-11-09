@@ -11,6 +11,23 @@ like /home/.../HochschuleMünchen/... breaks rosidl_generate_interfaces ("list i
 Board paths are ASCII, the host workspace path is mounted unchanged into the container."""
 
 [[rule]]
+file = "/opt/ros/{ros_distro}/share/hardware_interface/cmake/export_hardware_interfaceExport.cmake"
+find = '/opt/ros/'
+replace = '${CMAKE_SYSROOT}/opt/ros/'
+reason = """ros2_control's exported targets list pal_statistics' and rclcpp's include dirs and libraries as absolute
+board paths (built natively by the buildfarm). CMake does not re-root imported targets' properties into the sysroot,
+so cross builds of hardware interfaces fail ("Imported target hardware_interface::hardware_interface includes
+non-existent path /opt/ros/<distro>/include/pal_statistics_msgs", "No rule to make target
+/opt/ros/<distro>/lib/libpal_statistics_msgs__rosidl_generator_c.so"). The toolchain sets CMAKE_SYSROOT; in a
+native build it is empty and the paths stay as they were. The two lines with these paths are all that changes."""
+
+[[rule]]
+file = "/opt/ros/{ros_distro}/share/controller_interface/cmake/export_controller_interfaceExport.cmake"
+find = '/opt/ros/'
+replace = '${CMAKE_SYSROOT}/opt/ros/'
+reason = "Same as hardware_interface's export (controllers built against ros2_control)."
+
+[[rule]]
 file = "/opt/acados/interfaces/acados_template/acados_template/acados_ocp_solver.py"
 find = """
         if build:

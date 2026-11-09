@@ -243,9 +243,10 @@ Like the Renesas RDK's VS Code tasks/launch configs, but as `jxb` commands first
       or one node of a launch file, SSH, traces) in `vscode/<ws>.code-workspace`, so the workspace's own
       `.vscode/` stays untouched (`--into-workspace` writes it there only if absent). Debug flow replayed over MI
       (F47); not yet clicked through in the VS Code GUI
-- [ ] Newest SAM develop (d115bc5f, Lyrical on 26.04): builds 25/27 on both Lyrical profiles, object_detection
-      finds the CUDA EP plugin from jxb's ORT on the Nano (with a path override). Open: ros2_control/Gazebo in
-      the sysroots (size decision), SAM fixes for `ekf_core` install and the plugin path (F55)
+- [x] Newest SAM develop (d115bc5f, Lyrical on 26.04): 29/30 packages on both Lyrical profiles with ros2_control and
+      Gazebo in the sysroots (F74; `pylon_camera_package` needs Basler's SDK). On the Nano the develop deploy resolves
+      every library, `ekf_node` runs (with SAM's `ekf_core` fix) and object_detection finds the CUDA EP plugin from
+      jxb's ORT (with a path override). For SAM: the two patches in `.work/ws/` (F55)
 - [ ] CUDA kernel debugging: `cuda-gdbserver` is on the board; needs a host `cuda-gdb` that supports aarch64
       targets (check NVIDIA's x86 package) and a launch config for it
 - [x] Renesas-style launch mode: `jxb launch` (deploy of selected packages + the workspace's launch/config/
