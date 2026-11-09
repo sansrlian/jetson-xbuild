@@ -147,6 +147,10 @@ More on every command: [workflows.md](workflows.md).
 - Measurements (`--monitor`, `jxb trace ...`) take the board's lock `~/jxb/.measure.lock`, so they don't overlap
   with someone else's. If the board is busy, jxb says who holds it and waits. Other tools can join in with
   `flock ~/jxb/.measure.lock <command>`.
+- Every recording notes the board's power mode, clocks and temperatures at its start and end. The report flags
+  fixed clocks (`jetson_clocks`) and changes during the run. If you change clocks for your own runs, hold the
+  lock while doing it: store the settings first (`jetson_clocks --store FILE`) and restore them
+  (`--restore FILE`) before releasing the lock.
 - Don't run ONNX Runtime's CUDA EP inside the runtime container for now: the Nano reset once doing that
   (TensorRT in the container is fine). See findings F56.
 

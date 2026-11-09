@@ -1,6 +1,8 @@
 """Offline tests of jxb trace's parsers and analysis (no board needed): python3 -m unittest discover -s tests/trace"""
 import json
+import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -150,6 +152,123 @@ class RatesTest(unittest.TestCase):
             self.assertEqual(r["reports"], 7)
             self.assertEqual(r["median_hz"], 23.5)       # first three reports skipped
             self.assertEqual((r["min_hz"], r["max_hz"]), (22, 25))
+
+
+# BOARD_STATE on nano-lab (25 W), shortened to two CPUs' idle states and three devfreq devices
+BOARD_STATE = """\
+nvpmodel:25W
+nvfancontrol:active
+/sys/devices/system/cpu/cpufreq/policy0/scaling_governor:performance
+/sys/devices/system/cpu/cpufreq/policy4/scaling_governor:performance
+/sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq:729600
+/sys/devices/system/cpu/cpufreq/policy4/scaling_min_freq:729600
+/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq:1344000
+/sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq:1344000
+/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq:1344000
+/sys/devices/system/cpu/cpufreq/policy4/scaling_cur_freq:1344000
+/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_min_freq:115200
+/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_max_freq:1728000
+/sys/devices/system/cpu/cpu0/cpuidle/state0/disable:0
+/sys/devices/system/cpu/cpu0/cpuidle/state1/disable:0
+/sys/devices/system/cpu/cpu1/cpuidle/state0/disable:0
+/sys/devices/system/cpu/cpu1/cpuidle/state1/disable:0
+/sys/class/devfreq/15340000.vic/governor:performance
+/sys/class/devfreq/17000000.gpu/governor:performance
+/sys/class/devfreq/bwmgr/governor:bpmp-bwmgr
+/sys/class/devfreq/15340000.vic/min_freq:115200000
+/sys/class/devfreq/17000000.gpu/min_freq:306000000
+/sys/class/devfreq/bwmgr/min_freq:204000000
+/sys/class/devfreq/15340000.vic/max_freq:435200000
+/sys/class/devfreq/17000000.gpu/max_freq:918000000
+/sys/class/devfreq/bwmgr/max_freq:3199000000
+/sys/class/devfreq/15340000.vic/cur_freq:435200000
+/sys/class/devfreq/17000000.gpu/cur_freq:918000000
+/sys/class/devfreq/bwmgr/cur_freq:2133000000
+/sys/devices/platform/gpu.0/railgate_enable:0
+/sys/devices/platform/pwm-fan/hwmon/hwmon0/pwm1:71
+/sys/class/thermal/thermal_zone0/type:cpu-thermal
+/sys/class/thermal/thermal_zone2/type:cv0-thermal
+/sys/class/thermal/thermal_zone8/type:tj-thermal
+/sys/class/thermal/thermal_zone0/temp:48781
+/sys/class/thermal/thermal_zone8/temp:49250
+"""
+
+
+def jetson_clocks(state: str) -> str:
+    """What jetson_clocks does to BOARD_STATE: minimum = maximum for CPUs and devfreq devices, idle states off."""
+    lines = [line.split(":", 1) for line in state.splitlines()]
+    top = {path.rsplit("/", 1)[0]: v for path, v in lines if path.endswith(("/scaling_max_freq", "/max_freq"))}
+    out = []
+    for path, v in lines:
+        if path.endswith(("/scaling_min_freq", "/min_freq")):
+            v = top[path.rsplit("/", 1)[0]]
+        elif "/cpuidle/" in path:
+            v = "1"
+        out.append(f"{path}:{v}")
+    return "\n".join(out) + "\n"
+
+
+class BoardStateTest(unittest.TestCase):
+    def test_parse(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "board_state_start.txt"
+            f.write_text(BOARD_STATE)
+            s = jxb_trace.board_state(f)
+        self.assertEqual(s["nvpmodel"], "25W")
+        self.assertEqual(s["cpu"]["policy0"], {"governor": "performance", "min_mhz": 729.6, "max_mhz": 1344.0,
+                                               "cur_mhz": 1344.0, "hw_min_mhz": 115.2, "hw_max_mhz": 1728.0})
+        self.assertEqual(s["devfreq"]["bwmgr"], {"governor": "bpmp-bwmgr", "min_mhz": 204.0, "max_mhz": 3199.0,
+                                                 "cur_mhz": 2133.0})
+        self.assertEqual(s["devfreq"]["17000000.gpu"]["max_mhz"], 918.0)
+        self.assertEqual(s["cpuidle"], {"states": 4, "disabled": 0})
+        self.assertIs(s["gpu_railgate"], False)
+        self.assertEqual(s["fan"], {"nvfancontrol": "active", "pwm": [71]})
+        self.assertEqual(s["temp_c"], {"cpu": 48.8, "tj": 49.2})   # cv0 has no reading
+        self.assertEqual(jxb_trace.fixed_clocks(s), [])
+        self.assertEqual(jxb_trace.board_settings(s)["EMC limits"], "204-3199 MHz")
+        self.assertIsNone(jxb_trace.board_state(Path(d) / "missing.txt"))
+
+    def test_jetson_clocks_during_recording(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "board_state_start.txt").write_text(BOARD_STATE)
+            (Path(d) / "board_state_end.txt").write_text(jetson_clocks(BOARD_STATE))
+            b = jxb_trace.board_state_summary(Path(d))
+            self.assertEqual(b["fixed"], [])   # at the start
+            self.assertEqual(jxb_trace.fixed_clocks(b["end"]),
+                             ["CPU policy0 1344 MHz", "CPU policy4 1344 MHz", "15340000.vic 435.2 MHz",
+                              "GPU 918 MHz", "EMC 3199 MHz", "4/4 CPU idle states disabled"])
+            self.assertIn("EMC limits 204-3199 MHz -> 3199-3199 MHz", b["changed"])
+            self.assertIn("CPU idle states disabled 0/4 -> 4/4", b["changed"])
+            self.assertNotIn("power mode", " ".join(b["changed"]))
+            text = "\n".join(jxb_trace.format_board_state(b))
+            self.assertIn("power mode 25W, CPU performance 729.6-1344 MHz", text)
+            self.assertIn("EMC bpmp-bwmgr 204-3199 MHz (at 2133)", text)
+            self.assertIn("CHANGED during the recording", text)
+            (Path(d) / "board_state_end.txt").unlink()
+            (Path(d) / "board_state_start.txt").write_text(jetson_clocks(BOARD_STATE))
+            b = jxb_trace.board_state_summary(Path(d))
+            self.assertIn("EMC 3199 MHz", b["fixed"])
+            self.assertNotIn("changed", b)
+            self.assertIn("no end state", "\n".join(jxb_trace.format_board_state(b)))
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    def test_wrapper_keeps_exit_code(self):
+        with tempfile.TemporaryDirectory() as d:
+            remote = f"{d}/trace dir"
+            rc = subprocess.run(["bash", "-c", jxb_trace.with_board_state(remote, "trap 'exit 9' EXIT; exit 3")],
+                                timeout=30).returncode
+            self.assertEqual(rc, 9)   # the command's own trap and exit stay in its subshell
+            for name in ("board_state_start.txt", "board_state_end.txt"):
+                self.assertIsNotNone(jxb_trace.board_state(Path(remote) / name))
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    def test_wrapper_records_end_after_ctrl_c(self):
+        # Ctrl-C in a terminal: SIGINT to the whole process group, the command dies of it
+        with tempfile.TemporaryDirectory() as d:
+            rc = subprocess.run(["bash", "-c", jxb_trace.with_board_state(d, "sh -c 'kill -INT 0; sleep 5'")],
+                                start_new_session=True, timeout=30).returncode
+            self.assertEqual(rc, 130)
+            self.assertTrue((Path(d) / "board_state_end.txt").exists())
 
 
 class MeminfoTest(unittest.TestCase):

@@ -2046,6 +2046,7 @@ Key & Present for & Content \\
 \midrule
 \endhead
 \code{trace}, \code{dir}, \code{meta} & all & name, directory, \code{meta.json} \\
+\code{board_state} & all (since 2026-11-04) & \code{start}, \code{end}: \code{nvpmodel}; \codeb{cpu.<policy>} (\code{governor}, \code{min_mhz}, \code{max_mhz}, \code{cur_mhz}, \code{hw_min_mhz}, \code{hw_max_mhz}); \codeb{devfreq.<device>} (\code{governor}, \code{min_mhz}, \code{max_mhz}, \code{cur_mhz}; GPU, EMC = \code{bwmgr}, engines); \code{cpuidle} (\code{states}, \code{disabled}); \code{gpu_railgate}; \code{fan}; \code{temp_c}; \code{fixed} (clocks with minimum = maximum, disabled idle states); \code{changed} (settings that differ between start and end) \\
 \code{nsys} & nsys & \code{span_s}; \code{gpu} (\code{kernel_launches}, \code{kernel_time_ms}, \code{busy_ms}, \code{busy_pct}, \code{top_kernels}); \code{memcpy}; \code{cuda_api}; \code{nvtx}; \code{os_runtime}; \code{cpu_samples}; \code{processes} \\
 \code{tegrastats} & monitored runs & \code{samples}, \code{interval_ms}, \code{duration_s}, \codeb{metrics.<key>.{mean,min,max}}, \code{energy_j}, \code{csv} \\
 \code{processes} & \code{--monitor} & \code{session_cpu_pct}, \code{session_rss_mb}, \code{monitor_cpu_pct}; \code{session[]}, \code{top[]} with \code{cpu_share_pct}, \code{cpu_mean_pct}, \code{cpu_max_pct}, \code{rss_max_mb}, \code{series} \\

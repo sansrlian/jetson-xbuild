@@ -143,7 +143,7 @@ def cmd_launch(p, a) -> None:
     mode = "container" if container else "native"
     J.info(f"launch on {board.name} ({mode}): {shlex.join(a.cmd)}"
            + (f" for {a.duration} s" if a.duration else " (Ctrl-C stops)"))
-    command = f"bash -c {q(outer)}"
+    command = T.with_board_state(remote, f"bash -c {q(outer)}")   # power mode, clocks, temperatures before and after
     if a.monitor:   # measurements wait for each other on a shared board
         command = T.locked(board, f"jxb launch --monitor {local.name}", command, a)
     started, t0 = T._now(), time.time()

@@ -12,7 +12,10 @@
   jxb trace gui NAME [--tool nsys|ncu]               the board's Nsight GUI as a window here (X11 over SSH)
 
 Recordings land in traces/<board>/<stamp>-<kind>[-<label>]/ with meta.json; stamps come from the host clock
-(boards may run without NTP). summary.json is the machine-readable result (e.g. for JetsonPlanner). Nothing is
+(boards may run without NTP). Every recording also holds the board's power mode, clocks, governors and
+temperatures at its start and end (board_state_*.txt): the report flags fixed clocks (jetson_clocks) and changes
+in between, `jxb trace compare` differing settings. summary.json is the machine-readable result (e.g. for
+JetsonPlanner). Nothing is
 installed on the board: nsys and tegrastats come with JetPack, kernel traces use tracefs and a small helper
 script that is copied next to the recordings (tools/board/jxb-ftrace.sh).
 """
@@ -117,6 +120,30 @@ def _with_tegrastats(log: str, interval: int, command: str) -> str:
             f"kill $JXB_TS 2>/dev/null; wait $JXB_TS 2>/dev/null; exit $rc")
 
 
+# The board's power, clock and thermal state as path:value lines (sysfs of the board host, no root, ~25 ms): power
+# mode, CPU policies, devfreq devices (GPU, EMC = bwmgr, video and vision engines), CPU idle states, GPU rail gating,
+# fan, temperatures. jetson_clocks shows as minimum = maximum and disabled idle states.
+BOARD_STATE = (
+    'echo "nvpmodel:$(nvpmodel -q 2>/dev/null | sed -n "s/^NV Power Mode: //p")"; '
+    'echo "nvfancontrol:$(systemctl is-active nvfancontrol 2>/dev/null)"; c=/sys/devices/system/cpu; '
+    "grep -H . $c/cpufreq/policy*/{scaling_governor,scaling_min_freq,scaling_max_freq,scaling_cur_freq,"
+    "cpuinfo_min_freq,cpuinfo_max_freq} $c/cpu[0-9]*/cpuidle/state*/disable "
+    "/sys/class/devfreq/*/{governor,min_freq,max_freq,cur_freq} /sys/devices/platform/gpu.0/railgate_enable "
+    "/sys/devices/platform/pwm-fan*/hwmon/hwmon*/pwm[0-9] /sys/class/thermal/thermal_zone*/{type,temp} "
+    "2>/dev/null; true")
+
+
+def with_board_state(remote: str, command: str) -> str:
+    """Records the board state (BOARD_STATE) into the trace directory before and after a board-host command, keeping
+    its exit code; inside the measurement lock, so another user's jetson_clocks shows. The command runs in a
+    subshell, so its own traps and exit stay there. The trap keeps the shell alive for the end state after Ctrl-C
+    (a trap, unlike an ignored signal, is not inherited: the command still gets SIGINT)."""
+    script = (f"mkdir -p {q(remote)}; ( {BOARD_STATE} ) > {q(remote + '/board_state_start.txt')}; "
+              f"trap : INT TERM HUP; ( {command} ); rc=$?; "
+              f"( {BOARD_STATE} ) > {q(remote + '/board_state_end.txt')}; exit $rc")
+    return f"bash -c {q(script)}"
+
+
 def _save(board, p, a, kind: str, local: Path, remote: str, started: str, wall: float, rc: int, **extra) -> None:
     _fetch(board, remote, local)
     if J.DRY_RUN:
@@ -152,7 +179,8 @@ def cmd_nsys(p, a) -> None:
     script = _on_board(p, board, ws, shlex.join(prof + cmd), remote, _tty(), a.tegrastats, a.interval)
     J.info(f"nsys on {board.name}: {shlex.join(a.cmd)} (Ctrl-C ends the recording and keeps the report)")
     started, t0 = _now(), time.time()
-    rc = board.ssh(locked(board, f"jxb trace nsys {local.name}", script, a), tty=_tty(), check=False)
+    rc = board.ssh(locked(board, f"jxb trace nsys {local.name}", with_board_state(remote, script), a), tty=_tty(),
+                   check=False)
     wall = time.time() - t0
     J.info("exporting the report to SQLite on the board")
     board.ssh(f"out=$({nsys} export --type sqlite --force-overwrite true --output {q(rep + '.sqlite')} "
@@ -369,8 +397,8 @@ def cmd_tegrastats(p, a) -> None:
     J.info(f"tegrastats on {board.name} every {a.interval} ms"
            + (f" while running: {shlex.join(a.cmd)}" if a.cmd else f" for {a.duration or 10} s"))
     started, t0 = _now(), time.time()
-    rc = board.ssh(locked(board, f"jxb trace tegrastats {local.name}", script, a), tty=_tty() and bool(a.cmd),
-                   check=False)
+    rc = board.ssh(locked(board, f"jxb trace tegrastats {local.name}", with_board_state(remote, script), a),
+                   tty=_tty() and bool(a.cmd), check=False)
     _save(board, p, a, "tegrastats", local, remote, started, time.time() - t0, rc, interval_ms=a.interval)
 
 
@@ -618,8 +646,8 @@ def cmd_kernel(p, a) -> None:
     J.info(f"kernel trace on {board.name}: {', '.join(events)}"
            + (f" for {a.duration} s" if a.duration else " until Ctrl-C"))
     started, t0 = _now(), time.time()
-    rc = board.ssh(locked(board, f"jxb trace kernel {local.name}", f"bash -c {q(f'mkdir -p {q(remote)}; {command}')}",
-                          a), tty=True, check=False)
+    rc = board.ssh(locked(board, f"jxb trace kernel {local.name}", with_board_state(remote, command), a), tty=True,
+                   check=False)
     if rc == 77:
         board.ssh(f"rm -rf {q(remote)}", check=False)
         J.fail("kernel tracing needs root on the board: run in a terminal (sudo asks for your password), or use "
@@ -663,7 +691,7 @@ def cmd_bench(p, a) -> None:
     command = _with_tegrastats(f"{remote}/tegrastats.log", a.interval, run)
     J.info(f"benchmark on {board.name}: {len(models)} model(s) x {backends} (engines are built on the first run)")
     started, t0 = _now(), time.time()
-    rc = board.ssh(locked(board, f"jxb trace bench {local.name}", f"bash -c {q(command)}", a), check=False)
+    rc = board.ssh(locked(board, f"jxb trace bench {local.name}", with_board_state(remote, command), a), check=False)
     _save(board, p, a, "bench", local, remote, started, time.time() - t0, rc, models=names, backends=backends,
           interval_ms=a.interval)
 
@@ -883,9 +911,149 @@ def cmd_gui(p, a) -> None:
 
 
 # --------------------------------------------------------------------------------------- report / list
+# ----------------------------------------------------------------------------------------------- board state
+CPUFREQ_KEYS = {"scaling_governor": "governor", "scaling_min_freq": "min_mhz", "scaling_max_freq": "max_mhz",
+                "scaling_cur_freq": "cur_mhz", "cpuinfo_min_freq": "hw_min_mhz", "cpuinfo_max_freq": "hw_max_mhz"}
+
+
+def _int(v: str) -> int | None:
+    try:
+        return int(v)
+    except ValueError:
+        return None
+
+
+def board_state(path: Path) -> dict | None:
+    """A BOARD_STATE dump as power mode, CPU policies, devfreq devices, CPU idle states, GPU rail gating, fan and
+    temperatures (clocks in MHz)."""
+    if not path.exists():
+        return None
+    s: dict = {"nvpmodel": None, "cpu": {}, "devfreq": {}, "cpuidle": {"states": 0, "disabled": 0},
+               "gpu_railgate": None, "fan": {}, "temp_c": {}}
+    zones: dict[str, dict] = defaultdict(dict)
+    for line in path.read_text(errors="replace").splitlines():
+        key, sep, val = line.rpartition(":")   # sysfs paths may contain ":" (PCI), these values don't
+        val = val.strip()
+        if not sep:
+            continue
+        if key == "nvpmodel":
+            s["nvpmodel"] = val or None
+        elif key == "nvfancontrol":
+            s["fan"]["nvfancontrol"] = val or None
+        elif m := re.search(r"/cpufreq/(policy\d+)/(\w+)$", key):
+            if m[2] in CPUFREQ_KEYS:
+                khz = _int(val)
+                s["cpu"].setdefault(m[1], {})[CPUFREQ_KEYS[m[2]]] = (
+                    val if m[2] == "scaling_governor" else None if khz is None else round(khz / 1000, 1))
+        elif re.search(r"/cpuidle/state\d+/disable$", key):
+            s["cpuidle"]["states"] += 1
+            s["cpuidle"]["disabled"] += val != "0"
+        elif m := re.search(r"/devfreq/([^/]+)/(governor|min_freq|max_freq|cur_freq)$", key):
+            hz = _int(val)
+            s["devfreq"].setdefault(m[1], {})[m[2].replace("_freq", "_mhz")] = (
+                val if m[2] == "governor" else None if hz is None else round(hz / 1e6, 1))
+        elif key.endswith("/railgate_enable"):
+            s["gpu_railgate"] = val == "1"
+        elif re.search(r"/pwm-fan[^/]*/hwmon/hwmon\d+/pwm\d+$", key) and _int(val) is not None:
+            s["fan"].setdefault("pwm", []).append(_int(val))
+        elif m := re.search(r"/(thermal_zone\d+)/(type|temp)$", key):
+            zones[m[1]][m[2]] = val
+    for z in zones.values():   # sensors that are off read as an error (no line) or as -256 C
+        t = _int(z.get("temp", ""))
+        if "type" in z and t is not None and t > -40000:
+            s["temp_c"][z["type"].removesuffix("-thermal")] = round(t / 1000, 1)
+    return s
+
+
+def _devfreq_name(dev: str) -> str:
+    return "GPU" if dev.endswith(".gpu") else "EMC" if dev == "bwmgr" else dev
+
+
+def _mhz(v) -> str:
+    return "?" if v is None else f"{v:g}"
+
+
+def board_settings(st: dict) -> dict[str, str]:
+    """The settings of a board state that someone can change (power mode, governors, clock limits, idle states,
+    rail gating, fan control), for comparisons; not the current clocks or temperatures."""
+    out = {"power mode": st.get("nvpmodel")}
+    for pol, c in sorted(st.get("cpu", {}).items()):
+        out[f"CPU {pol} governor"] = c.get("governor")
+        out[f"CPU {pol} limits"] = f"{_mhz(c.get('min_mhz'))}-{_mhz(c.get('max_mhz'))} MHz"
+    for dev, f in sorted(st.get("devfreq", {}).items()):
+        out[f"{_devfreq_name(dev)} governor"] = f.get("governor")
+        out[f"{_devfreq_name(dev)} limits"] = f"{_mhz(f.get('min_mhz'))}-{_mhz(f.get('max_mhz'))} MHz"
+    ci = st.get("cpuidle") or {}
+    if ci.get("states"):
+        out["CPU idle states disabled"] = f"{ci['disabled']}/{ci['states']}"
+    if st.get("gpu_railgate") is not None:
+        out["GPU rail gating"] = "on" if st["gpu_railgate"] else "off"
+    out["fan control"] = (st.get("fan") or {}).get("nvfancontrol")
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def fixed_clocks(st: dict) -> list[str]:
+    """Clocks held at one frequency (minimum = maximum, as jetson_clocks sets them) and disabled CPU idle states."""
+    fixed = [f"CPU {pol} {_mhz(c['max_mhz'])} MHz" for pol, c in sorted(st.get("cpu", {}).items())
+             if c.get("max_mhz") and c.get("min_mhz") == c["max_mhz"]]
+    fixed += [f"{_devfreq_name(dev)} {_mhz(f['max_mhz'])} MHz" for dev, f in sorted(st.get("devfreq", {}).items())
+              if f.get("max_mhz") and f.get("min_mhz") == f["max_mhz"]]
+    ci = st.get("cpuidle") or {}
+    if ci.get("disabled"):
+        fixed.append(f"{ci['disabled']}/{ci['states']} CPU idle states disabled")
+    return fixed
+
+
+def board_state_summary(d: Path) -> dict | None:
+    """Board state at the start and the end of a recording, its fixed clocks and what changed in between (someone
+    ran jetson_clocks or nvpmodel during the recording)."""
+    start, end = board_state(d / "board_state_start.txt"), board_state(d / "board_state_end.txt")
+    if start is None and end is None:
+        return None
+    out = {"start": start, "end": end, "fixed": fixed_clocks(start or end)}
+    if start and end:
+        a, b = board_settings(start), board_settings(end)
+        out["changed"] = [f"{k} {a.get(k, '-')} -> {b.get(k, '-')}" for k in sorted(a.keys() | b.keys())
+                          if a.get(k) != b.get(k)]
+    return out
+
+
+def format_board_state(b: dict) -> list[str]:
+    st = b["start"] or b["end"]
+    cpu = st.get("cpu", {})
+    parts = [f"power mode {st.get('nvpmodel') or '?'}"]
+    if cpu:
+        govs = "/".join(sorted({c.get("governor") or "?" for c in cpu.values()}))
+        parts.append(f"CPU {govs} {'/'.join(sorted({_mhz(c.get('min_mhz')) for c in cpu.values()}))}-"
+                     f"{'/'.join(sorted({_mhz(c.get('max_mhz')) for c in cpu.values()}))} MHz")
+    for dev, f in sorted(st.get("devfreq", {}).items()):
+        if _devfreq_name(dev) in ("GPU", "EMC"):
+            parts.append(f"{_devfreq_name(dev)} {f.get('governor')} {_mhz(f.get('min_mhz'))}-{_mhz(f.get('max_mhz'))} "
+                         f"MHz (at {_mhz(f.get('cur_mhz'))})")
+    ci = st.get("cpuidle") or {}
+    if ci.get("states"):
+        parts.append("CPU idle states on" if not ci["disabled"] else f"{ci['disabled']}/{ci['states']} CPU idle "
+                     "states off")
+    if st.get("gpu_railgate") is not None:
+        parts.append(f"GPU rail gating {'on' if st['gpu_railgate'] else 'off'}")
+    if st.get("temp_c"):
+        parts.append(f"hottest {max(st['temp_c'].values()):.1f}C")
+    lines = [f"board at {'start' if b['start'] else 'end'}: " + ", ".join(parts)]
+    if b["fixed"]:
+        lines.append("  fixed clocks: " + ", ".join(b["fixed"]))
+    if b.get("changed"):
+        lines.append("  CHANGED during the recording: " + "; ".join(b["changed"]))
+    if b["end"] is None:
+        lines.append("  (no end state: the recording ended before it was taken)")
+    return lines
+
+
 def analyze(d: Path) -> dict:
     meta = json.loads((d / "meta.json").read_text()) if (d / "meta.json").exists() else {}
     s: dict = {"trace": d.name, "dir": str(d), "meta": meta}
+    bs = board_state_summary(d)
+    if bs:
+        s["board_state"] = bs
     if (d / "report.sqlite").exists():
         s["nsys"] = nsys_summary(d / "report.sqlite")
         s["nsys"]["report"] = "report.nsys-rep"
@@ -948,6 +1116,8 @@ def format_summary(s: dict) -> str:
     m = s.get("meta", {})
     lines = [f"{s['trace']}  board={m.get('board')} profile={m.get('profile')} rc={m.get('rc')} "
              f"wall={m.get('wall_s')} s", f"  command: {shlex.join(m.get('command') or []) or '-'}"]
+    if s.get("board_state"):
+        lines += format_board_state(s["board_state"])
     n = s.get("nsys")
     if n:
         if "error" in n:

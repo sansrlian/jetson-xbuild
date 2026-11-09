@@ -1591,6 +1591,7 @@ them). Details: [workflows.md](workflows.md).
 | Key | Present for | Content |
 |---|---|---|
 | `trace`, `dir`, `meta` | all | name, directory, `meta.json` |
+| `board_state` | all (since 2026-11-04) | `start`, `end`: `nvpmodel`, `cpu.<policy>` (`governor`, `min_mhz`, `max_mhz`, `cur_mhz`, `hw_min_mhz`, `hw_max_mhz`), `devfreq.<device>` (`governor`, `min_mhz`, `max_mhz`, `cur_mhz`; GPU, EMC = `bwmgr`, engines), `cpuidle` (`states`, `disabled`), `gpu_railgate`, `fan`, `temp_c`; `fixed` (clocks with minimum = maximum, disabled idle states), `changed` (settings that differ between start and end) |
 | `nsys` | nsys | `span_s`, `gpu` (`kernel_launches`, `kernel_time_ms`, `busy_ms`, `busy_pct`, `top_kernels`), `memcpy`, `cuda_api`, `nvtx`, `os_runtime`, `cpu_samples`, `processes` |
 | `tegrastats` | `--tegrastats`, `--monitor`, bench | `samples`, `interval_ms`, `duration_s`, `metrics.<key>.{mean,min,max}`, `energy_j`, `csv` |
 | `processes` | `--monitor` | `session_cpu_pct`, `session_rss_mb`, `monitor_cpu_pct`, `session[]`/`top[]` with `cpu_share_pct`, `cpu_mean_pct`, `cpu_max_pct`, `rss_max_mb`, `series` |

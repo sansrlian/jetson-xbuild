@@ -262,6 +262,7 @@ def _metrics(s: dict) -> dict:
     bag = (s.get("bag") or {}).get("series", {})
     inf = next((v for k, v in bag.items() if k.endswith("inference_time:value")), {})
     la = s.get("launch") or {}
+    bs = s.get("board_state")
 
     def mt(key, field="mean", scale=1.0):
         return round(t[key][field] * scale, 2) if key in t else None
@@ -272,12 +273,41 @@ def _metrics(s: dict) -> dict:
             "ram_max_gb": mt("ram_used_mb", "max", 1 / 1024), "vdd_in_mean_w": mt("power_vdd_in_mw", "mean", 1e-3),
             "energy_j": (s.get("tegrastats") or {}).get("energy_j"), "inference_ms_mean": inf.get("mean"),
             "inference_ms_p99": inf.get("p99"), "inferences": inf.get("n"),
-            "crashed": len(la.get("crashed", [])) if la else None}
+            "crashed": len(la.get("crashed", [])) if la else None,
+            "fixed_clocks": (", ".join(bs["fixed"]) or "none") if bs else None}
+
+
+def board_differences(sums: list[dict], names: list[str]) -> list[str]:
+    """Markdown: the board settings (power mode, governors, clock limits, ...) that differ between the recordings."""
+    sets = []
+    for s in sums:
+        bs = s.get("board_state") or {}
+        st = bs.get("start") or bs.get("end")
+        sets.append(jxb_trace.board_settings(st) if st else None)
+    known = [x for x in sets if x is not None]
+    if not known:
+        return []
+    differ = [k for k in sorted({k for x in known for k in x}) if len({x.get(k) for x in known}) > 1]
+    md = ["", "## Board settings"]
+    if differ:
+        md += ["The board's settings differ between the recordings, so their results are not directly comparable:",
+               "", "| setting | " + " | ".join(names) + " |", "|" + "---|" * (len(names) + 1)]
+        md += ["| " + k + " | " + " | ".join("not recorded" if x is None else x.get(k, "-") for x in sets) + " |"
+               for k in differ]
+        print("board settings differ: " + ", ".join(differ))
+    else:
+        md.append(f"The same in the {len(known)} recordings that recorded them (power mode, governors, clock limits, "
+                  "CPU idle states, rail gating, fan control).")
+    missing = [n for n, x in zip(names, sets) if x is None]
+    if missing:
+        md += ["", f"Not recorded (recordings before jxb recorded the board state): {', '.join(missing)}"]
+    return md
 
 
 def compare(out: Path, dirs: list[Path]) -> Path:
     out.mkdir(parents=True, exist_ok=True)
-    rows = [_metrics(json.loads((d / "summary.json").read_text())) for d in dirs]
+    sums = [json.loads((d / "summary.json").read_text()) for d in dirs]
+    rows = [_metrics(s) for s in sums]
     cols = [c for c in rows[0] if any(r.get(c) is not None for r in rows)]
     md = [f"# Comparison of {len(rows)} recordings", "", "| " + " | ".join(cols) + " |",
           "|" + "---|" * len(cols)]
@@ -302,6 +332,7 @@ def compare(out: Path, dirs: list[Path]) -> Path:
         fig.savefig(out / "compare.png")
         plt.close(fig)
         md += ["", "![comparison](compare.png)"]
+    md += board_differences(sums, names)
     (out / "compare.md").write_text("\n".join(md) + "\n")
     (out / "compare.json").write_text(json.dumps(rows, indent=2) + "\n")
     print(f"{out}/compare.md")

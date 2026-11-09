@@ -162,6 +162,18 @@ Recordings land in `traces/<board>/<stamp>-<kind>[-<label>]/` (stamp from the ho
 NTP), together with `meta.json` and the analysis in `summary.json`. Raw files are removed from the board after
 fetching (`--keep` keeps them).
 
+Every recording (launch, nsys, tegrastats, kernel, bench) also notes the board's state at its start and its end,
+inside the measurement lock (`board_state_start.txt`, `board_state_end.txt`; sysfs, no root, ~25 ms):
+
+- power mode (`nvpmodel`)
+- CPU and devfreq governors, limits and current clocks (GPU, EMC = `bwmgr`, the video and vision engines)
+- disabled CPU idle states, GPU rail gating
+- fan control and temperatures
+
+The report prints it in one line. It lists clocks held at one frequency (minimum = maximum, as `jetson_clocks`
+sets them) and the settings that changed during the recording. `jxb trace compare` lists the settings that differ
+between recordings, since their results aren't directly comparable.
+
 ### Nsight Systems: `jxb trace nsys`
 
 ```bash
@@ -260,7 +272,8 @@ All commands are non-interactive with fixed paths, so a GUI can drive them and r
 
 - `jxb trace list --json`: recordings with board, kind, label, command, duration and exit code.
 - `jxb trace report DIR|BOARD|latest --json`: the analysis; also stored as `summary.json` in the trace directory
-  (keys `meta`, `nsys`, `tegrastats`, `kernel`, each present when that recording exists).
+  (keys `meta`, `board_state`, `nsys`, `tegrastats`, `kernel`, ..., each present when that recording has it;
+  docs/system.md, Appendix C).
 - `jxb trace tegrastats BOARD --live --json`: one JSON object per sample (JSON lines).
 - `jxb trace kernel BOARD --live --top --json`: one JSON object per second of trace time.
 - Recording commands take `--json` to print `summary.json` at the end instead of the text report.
