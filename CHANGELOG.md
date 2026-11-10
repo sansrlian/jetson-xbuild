@@ -1,0 +1,40 @@
+# Changelog
+
+`jxb --version` prints the version and the commit; every recording's `meta.json` notes it (`jxb`).
+
+## 1.0.0 (2026-11-10)
+
+The first complete release: cross-development, deployment, debugging and analysis of ROS 2 / CUDA / TensorRT
+software on Jetson Orin boards that stay on stock JetPack 7.2.1. Verified on an Orin Nano 8 GB.
+
+**Build**
+- Profiles for JetPack 7.2.1: Jazzy, Kilted, Lyrical + Isaac ROS 5 (Ubuntu 24.04) and Lyrical on Ubuntu 26.04.
+- Sysroots built from the board's own apt repositories without emulation, pinned by a package lock; workspace and
+  launch-file dependencies (`jxb sysroot rosdeps`); ONNX Runtime 1.31 with CUDA and TensorRT EPs, acados, depthai.
+- An xbuild image per profile (cross GCC, nvcc 13.2 for the board, ROS tools, cuda-gdb), a long-lived dev container,
+  `cross-colcon-build`, binary checks against the board's library versions.
+
+**Board**
+- `deploy`, `run`, `ssh`, Renesas-style `launch` (clean Ctrl-C), natively or in a GPU-enabled runtime container; only
+  `~/jxb/` is written on the board.
+- `debug` with gdbserver over SSH, also for one node of a launch file; `--cuda` for CUDA kernels.
+- `gui`: a board program's window on the desktop over X11.
+- Several boards at once: `NAME,NAME`, `@GROUP`, `all`; a ROS domain per board.
+
+**Analysis**
+- Recordings: Nsight Systems, tegrastats, kernel traces (ftrace), inference benchmarks, `launch --monitor` (per-process
+  CPU and memory, memory counters), `--bag`, `--rates`, `--mem-guard`, helpers such as a synthetic camera.
+- Valid measurements on shared boards: a measurement lock, the board's clocks and temperatures at start and end,
+  a clock offset per board for a common time axis, tegrastats' real sampling interval, ring-buffer loss in kernel
+  traces reported and handled.
+- `report` and `summary.json`, `plot`, `compare`, and Perfetto timelines across recordings and boards.
+
+**Tools and documentation**
+- VS Code workspace with tasks and debug configurations (CUDA, several boards).
+- CI: shell and Python checks, analysis tests and CLI dry runs on every push; image builds for every profile; a
+  self-hosted workflow for sysroots and the proof packages.
+- [Getting started](docs/getting-started.md), [analyst's guide](docs/analysis.md), [workflows](docs/workflows.md),
+  [system architecture](docs/system.md) ([PDF](docs/latex/jxb.pdf)), the SAM stack's
+  [measurement report](docs/latex/measurements.pdf) and 82 [findings](docs/findings.md).
+
+**Known limitations**: see [PLAN.md](PLAN.md) and the [system document](docs/system.md), Section 12.

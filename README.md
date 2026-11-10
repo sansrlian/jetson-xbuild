@@ -1,11 +1,15 @@
 # jxb — Jetson Orin cross-dev environment
 
+[![CI](https://github.com/sansrlian/jetson-xbuild/actions/workflows/ci.yml/badge.svg)](https://github.com/sansrlian/jetson-xbuild/actions/workflows/ci.yml)
+[![xbuild image](https://github.com/sansrlian/jetson-xbuild/actions/workflows/image.yml/badge.svg)](https://github.com/sansrlian/jetson-xbuild/actions/workflows/image.yml)
+
 Build ROS 2, CUDA, TensorRT and ONNX Runtime code for NVIDIA Jetson Orin on a strong x86_64 machine, then deploy,
 run and debug it on one or many boards. Inspired by the Renesas RZ/V2H RDK `xbuild` container, rebuilt for the
 NVIDIA world. Roadmap and decisions: [PLAN.md](PLAN.md).
 
 **New here?** [docs/getting-started.md](docs/getting-started.md) covers the one-time setup, daily use and what to do
-when something goes wrong.
+when something goes wrong. **Analyzing boards?** [docs/analysis.md](docs/analysis.md) maps questions to recordings,
+explains the results and what keeps measurements on a shared board valid.
 How it works under the hood, with the design, measurements and lessons learned:
 [docs/system.md](docs/system.md) (typeset: [docs/latex/jxb.pdf](docs/latex/jxb.pdf)). The SAM stack's measured
 performance on the Orin Nano, with optimization hypotheses: [docs/latex/measurements.pdf](docs/latex/measurements.pdf).
@@ -105,5 +109,5 @@ configurations in `vscode/<ws>.code-workspace`. Details: [docs/workflows.md](doc
 | `toolchain/jxb_trace.py`, `toolchain/jxb_vscode.py` | `jxb trace ...` and `jxb vscode init` |
 | `tools/board/` | helpers jxb copies to the board on demand (`jxb-ftrace.sh`) |
 | `traces/`, `vscode/` | recordings and generated VS Code workspaces (local, gitignored) |
-| `docs/` | [getting started](docs/getting-started.md), [workflows](docs/workflows.md), [findings and pitfalls](docs/findings.md), [system architecture and internals](docs/system.md) ([PDF](docs/latex/jxb.pdf)) |
+| `docs/` | [getting started](docs/getting-started.md), [analyst's guide](docs/analysis.md), [workflows](docs/workflows.md), [findings and pitfalls](docs/findings.md), [system architecture and internals](docs/system.md) ([PDF](docs/latex/jxb.pdf)) |
 | `attic/` | the earlier, untested scaffold (2026-10-26), kept for reference |

@@ -813,6 +813,18 @@ host the stage is checked with `jxb-elfcheck`, the Python extension suffix check
 `SIGILL` on such code, F25). `jxb test --board B` copies the stage to `~/jxb/<profile>/tests` and runs it on the GPU.
 The parsers of the trace analysis have their own unit tests (`tests/trace`).
 
+**Continuous integration.** Three GitHub Actions workflows ([`.github/workflows/`](../.github/workflows)) run what
+fits where:
+
+- `ci.yml`, on every push and pull request:
+  - shellcheck of every shell script at warning level, and a syntax check of every Python file;
+  - the `tests/trace` unit tests;
+  - dry runs of `launch`, `trace tegrastats` and `vscode init` for the native profiles, against a CI board entry
+    that names its Ubuntu release, so no command needs to ask a board.
+- `image.yml`: builds the xbuild image of every profile when `docker/` or `profiles/` change.
+- `board.yml`, on demand on a self-hosted runner labelled `jxb`: image, sysroot and the probe tests above,
+  optionally on a board. A sysroot takes 16-19 GB, more than GitHub's hosted runners have.
+
 ---
 
 ## 6. Deep dive III: deployment and the board runtime
@@ -1043,6 +1055,70 @@ everything it started (F42). With `--launch PKG FILE`, the node is started by it
 executable runs under gdbserver, via `ros2 launch ... --launch-prefix 'gdbserver ...' --launch-prefix-filter '^E$'`.
 Attaching to a running node is not offered: the board has `kernel.yama.ptrace_scope=1`, which would require root.
 
+**CUDA code.** `--cuda` replaces the pair with NVIDIA's:
+
+- **On the board:** `cuda-gdbserver`, which comes with JetPack's CUDA toolkit.
+- **On the host:** `cuda-gdb` in the dev container. The xbuild image installs the x86 build (`cuda-gdb-13-2`),
+  which accepts aarch64 targets, so the tunnel, the sysroot setup and the VS Code integration stay the same
+  (`jxb gdb --cuda`, the wrapper's `--jxb-cuda`).
+
+Jetson grants GPU debugging only to members of the group that owns the debugger device nodes
+(`/dev/nvhost-dbg-gpu`, group `debug`). Without that membership, cuda-gdbserver reports that the device node does
+not allow debugging, and the session sees host code only. jxb checks the membership before it starts and prints
+the one-time fix (F75).
+
+With the membership, sessions stop inside kernels (`set cuda break_on_launch application`), as verified on the Nano:
+
+- jxb's `axpy_kernel<<<(4096,1,1),(256,1,1)>>>`, running on all 8 SMs;
+- in SAM's detector, started from its launch file and fed by the synthetic camera, TensorRT's cuTENSOR input
+  conversion `permutationKernelPLC3<<<(1,2280,1),(128,1,1)>>>` (F81).
+
+In batch mode, cuda-gdb over cuda-gdbserver resumes in the background, so commands after `continue` would run before
+the stop. `--cuda --batch` therefore sets `maint set target-async off`.
+
+### 6.8 Several boards
+
+Every command that takes a board also takes several:
+
+- a comma-separated list;
+- `@GROUP`: every board whose `groups` in `boards.toml` contain GROUP;
+- `all`.
+
+`main()` expands the argument. For more than one board, it runs the same command line once per board as a child
+process (`fan_out`):
+
+- All children start at once, and every output line is prefixed with its board's name.
+- Ctrl-C reaches every child (same process group), and each stops its board's work cleanly.
+- A table of exit codes and wall times follows.
+
+Interactive commands (`ssh`, `gui`, `debug`) keep a single board; debugging several boards at once is a VS Code
+compound (Section 8).
+
+Boards on one network see each other's ROS 2 traffic, so `ros_domain_id` in a board's entry sets `ROS_DOMAIN_ID`
+there. A workspace that must share a domain with the host (hardware in the loop) sets its own in `jxb.toml`, and
+that one wins.
+
+Recordings keep their per-board directories and the measurement lock. Two inventory names for one physical board
+therefore record one after the other (F78), while different boards record in parallel and are merged into one
+timeline (Section 7.9).
+
+### 6.9 Remote GUI windows
+
+`jxb gui BOARD -- PROGRAM` shows a program of the board as a window on the host's desktop. It uses SSH X11
+forwarding in trusted mode (`-Y`), because hosts often lack `xauth` and untrusted clients lose X extensions that Qt
+tools need. The program runs with the deployment's environment, like `jxb run`.
+
+No desktop session is needed on the board. On the Nano, the GDM login screen alone costs about 330 MB (F76).
+
+In container mode, sshd's X cookie is bound to the board's host name, which the container (with its own host
+name) does not match. jxb therefore merges the cookie into a temporary file with the wildcard family (`ffff`), and
+passes that file and `DISPLAY` into the container.
+
+Measured on the Nano, with the window idle:
+
+- a forwarded `nsys-ui` holds 441 MB on the board, an `xterm` 10 MB;
+- the forwarding itself costs no measurable CPU.
+
 ---
 
 ## 7. Deep dive IV: observability
@@ -1141,6 +1217,12 @@ $$
 E = \sum_k P_k \,\Delta t .
 $$
 
+$\Delta t$ is not the nominal `--interval`: on the Nano, tegrastats samples every 507.3 ms for `--interval 500`
+(1.5 % long, F82). Its lines carry the board's clock to the second. From 30 s of recording on, a least-squares fit of
+those timestamps over the sample index estimates $\Delta t$ to better than 0.5 % (0.1 % over 25 minutes), and the
+fitted value (`interval_real_ms`) is used for the time axis and the energy. Shorter recordings keep the nominal
+interval, because the fit's error would be as large as the effect.
+
 tegrastats runs on the board host, also in container mode, with no inherited standard streams
 (`< /dev/null > /dev/null 2>&1`) so that a leftover can never hold the SSH channel open, and is stopped by an exit
 trap (F62).
@@ -1191,6 +1273,23 @@ $$
 reported as p50, p99 and maximum per task. On the PREEMPT_RT kernel of the board this is the quantity that
 determines the reaction time of control nodes. The same class drives a live view that prints per-second statistics.
 
+ftrace keeps a fixed ring buffer per CPU and overwrites the oldest events when it is full. The full SAM stack writes
+about 300 000 events/s with the default presets, so a buffer of 8 MB per CPU kept only the last 5.9 s of a 30 s
+recording (F80). After an overflow, each CPU's data starts at a different time (`##### CPU N buffer started`). A
+wakeup recorded on one CPU then had its switch-in on another CPU's lost data, which produced spurious delays of
+0.1-0.4 s.
+
+jxb therefore handles overflows explicitly:
+
+- It reads the trace header (`entries-in-buffer/entries-written`).
+- It computes the statistics only over the window that every CPU covers, from the last of those markers on;
+  `SchedStats.reset()` carries the running tasks over.
+- It reports the share of events it kept, and the buffer that would keep all of them:
+  $\lceil 1.1\, b \cdot w / k \rceil$ MB per CPU for buffer $b$, $w$ events written and $k$ kept.
+
+`--buffer-mb` sets the buffer; by default it grows with `--duration`, from 8 to 32 MB per CPU. It stays bounded
+because the board is shared and its kernel has a bug in memory reclaim (F79).
+
 ### 7.6 Inference benchmarks
 
 `jxb trace bench BOARD --models M.onnx ...` runs a matrix of backends on the board
@@ -1206,8 +1305,62 @@ reuse, for example as the SAM node's `model:=<...>.engine`.
 
 `jxb trace report` prints the summary of a recording, `jxb trace plot` renders plots and a Markdown report with
 matplotlib in the dev container, and `jxb trace compare A B ... --name N` puts several recordings side by side (for
-example native versus container, or ONNX Runtime versus TensorRT) in `traces/compare/N/`. Figures 9 to 12 in
-Section 9 were produced this way.
+example native versus container, or ONNX Runtime versus TensorRT) in `traces/compare/N/`; the comparison also lists
+the board settings that differ between the recordings (Section 7.8). Figures 9 to 12 in Section 9 were produced
+this way.
+
+### 7.8 Board state and a common time axis
+
+Each recording captures the board's state at its start and at its end. One shell pipeline of `grep -H` over sysfs
+does it, without root, in about 25 ms. It runs **inside** the measurement lock, so another user's `jetson_clocks`
+shows. It records:
+
+- the power mode;
+- the CPU policies' governors and limits;
+- every devfreq device: the GPU, EMC (as `bwmgr`), the video and vision engines;
+- the CPU idle states and GPU rail gating;
+- fan control and the thermal zones;
+- the board's wall clock and uptime.
+
+The report flags clocks held at one frequency (minimum = maximum, the signature of `jetson_clocks`) and every
+setting that differs between start and end; `compare` lists settings that differ between recordings (F73).
+
+Boards often run without NTP (the Nano's clock is at 1970), so a common time axis needs each board's offset
+$\theta = t_{\text{board}} - t_{\text{host}}$. jxb estimates it after each recording over one SSH connection, the
+way NTP does: the host sends a line at $t_0$, the board answers with its clock $t_b$, and the answer arrives at
+$t_1$. Then
+
+$$
+\hat\theta = t_b - \frac{t_0 + t_1}{2}, \qquad |\hat\theta - \theta| \le \frac{t_1 - t_0}{2}.
+$$
+
+The first exchange, which includes the connection setup, is discarded. Of eight more, the one with the shortest
+round trip is kept. On the lab network the round trip is about 3 ms, so the error bound is about 1.5 ms; five
+estimates agreed within 0.39 ms (F77).
+
+With $\hat\theta$, and with the board's wall clock $w_0$ and uptime $u_0$ at the start, board times and uptimes map
+to host time:
+
+- board times (nsys, bag stamps, rate probes): $t_{\text{host}} = t_{\text{board}} - \hat\theta$;
+- uptimes (per-process samples): $t_{\text{host}} = (w_0 - \hat\theta) + (u - u_0)$.
+
+### 7.9 Timelines
+
+`jxb trace perfetto` writes recordings as one timeline in the Chrome JSON trace event format, which the Perfetto UI
+opens. Each recording becomes one process, a group of tracks:
+
+- its board state, as an instant event;
+- counter tracks: tegrastats (CPU, GPU, RAM, board power, junction temperature), each session process's CPU and
+  RSS, the memory counters, topic rates and numeric bag topics;
+- slices: nsys's GPU kernels (one track per CUDA stream) and NVTX ranges.
+
+Times are the host's (Section 7.8), so recordings of several boards made at once line up. A fan-out recording
+writes the merged timeline by itself.
+
+Two independent sources agree in a recorded launch: the first inference (bag, board clock) is at +5.09 s and the
+rise of GPU load (tegrastats, start plus sampling interval) at +5.00 s. nsys kernels fall inside their NVTX ranges
+(F77). Perfetto's UI loads `?url=` traces only from `127.0.0.1:9001` (its content security policy), so files are
+opened with "Open trace file".
 
 ---
 
@@ -1226,11 +1379,11 @@ tasks and configurations and keeps the settings.
 |---|---|
 | build | `jxb: build` (default build task, `$gcc` problem matcher), `jxb: build package (debug info)`, `... + deploy` |
 | run | `jxb: deploy`, `jxb: run node on board`, `jxb: launch on board`, `jxb: launch + monitor (recorded)`, `jxb: launch + monitor + bag (recorded)`, `jxb: ssh to board` |
-| debug | `jxb: gdbserver node`, `jxb: gdbserver node in launch`, `jxb: stop gdbserver launch` |
+| debug | `jxb: gdbserver node`, `jxb: cuda-gdbserver node`, `jxb: gdbserver node in launch`, `jxb: stop gdbserver launch`, and per further board `jxb: gdbserver node (<board>)` |
 | trace | `jxb: trace nsys node`, `jxb: trace nsys launch`, `jxb: tegrastats live`, `jxb: kernel trace`, `jxb: kernel trace live (top)`, `jxb: trace report (latest)`, `jxb: trace plot (latest)`, `jxb: benchmark models` |
 | checks | `jxb: board check`, `jxb: test suite on board`, `jxb: container shell` |
 
-The two debug configurations use `cppdbg` with `miDebuggerPath` set to
+The debug configurations (a node, a node in a launch file, a node with CUDA code) use `cppdbg` with `miDebuggerPath` set to
 [`toolchain/bin/jxb-gdb`](../toolchain/bin/jxb-gdb) (which runs `jxb gdb` with the profile's sysroot) and
 `miDebuggerServerAddress` `127.0.0.1:${config:jxb.gdbPort}`. Their `preLaunchTask` starts `jxb debug --server-only`
 as a **background task**; VS Code needs to know when the server is ready, which a problem matcher with a
@@ -1238,6 +1391,11 @@ never-matching pattern and `beginsPattern`/`endsPattern` set to `Listening on po
 file, a `postDebugTask` terminates the launch task through an input of type `command`
 (`workbench.action.tasks.terminate`). The flow was verified by replaying the generated configuration over gdb's
 machine interface the way `cppdbg` drives it (F47).
+
+The CUDA configuration passes `--jxb-cuda`, so the wrapper runs `cuda-gdb` (Section 6.7). With several `--board`
+options, `init` adds a gdbserver task and a debug configuration per further board, each on its board's `gdb_port`,
+and a compound `jxb: debug node on all boards` that starts them together. Every session forwards its board's
+gdbserver to `127.0.0.1:<port>` on the host, so `init` refuses boards that share a port.
 
 ---
 
@@ -1344,6 +1502,23 @@ images between CPU and GPU memory for every stage.
 
 *Figure 12: CPU (100 = one core) and resident memory of the stack's processes over time.*
 
+A kernel trace of the stack (`jxb trace kernel`, same setup, F80) shows where the CPU time outside the nodes goes.
+Over the 4.4 s that every CPU's ring buffer covers:
+
+| Quantity | Value |
+|---|---:|
+| context switches | 75 600 /s |
+| CPU busy, per CPU | ~54 % |
+| wakeup latency of executor and DDS threads, p50 / p99 | 3-7 µs / 0.1-1.3 ms |
+| largest single wakeup latencies | up to 78 ms |
+| `nvmap-bz` (nvmap's page-zeroing kernel thread) | 0.39 cores |
+| `NET_RX` softirqs (DDS image transport over loopback) | 0.19 cores, 187 000 in 4.4 s |
+| each DDS receive thread (`recvUC`) | 0.17-0.20 cores |
+
+`nvmap-bz` is the kernel side of the image pipeline's per-frame device allocations: Nsight Systems counts about 95
+`cudaMalloc`/`cudaFree` pairs per second (F64). Together with the API time, buffer reuse would save about half a
+core.
+
 ### 9.6 Discussion and threats to validity
 
 The results support three conclusions about the system itself. First, the cross-built binaries are functionally
@@ -1414,12 +1589,18 @@ every exit path (traps).
 ### 10.6 Shared hardware
 
 - **Overlapping measurements** (F53) led to the measurement lock and ancestry-based attribution.
-- **An unexplained reset**: the Nano reset about 3 s into the first run of ONNX Runtime's CUDA EP inside the runtime
-  container, while the EP was initializing (F56). Nothing unusual preceded it (1.5 GB RAM, 49 °C, 6.7 W); TensorRT in
-  the same container ran fine before and after; the CUDA EP runs fine natively. The container differs from native
-  in its cuDNN version (9.20 from the sysroot vs. the board's 9.25). The cause cannot be determined without root
-  (the panic log would be in `/sys/fs/pstore`), so this combination is excluded from container runs until then.
-  *Lesson:* on shared hardware, an unexplained fault is a policy decision, not only a bug.
+- **A reset, explained a week later.** The Nano reset about 3 s into the first run of ONNX Runtime's CUDA EP inside
+  the runtime container, while the EP was initializing (F56). Nothing unusual preceded it (1.5 GB RAM, 49 °C,
+  6.7 W). That combination stayed excluded from container runs until root was available. pstore then showed a
+  kernel panic in `kswapd0` (F79). Page reclaim freed buffer heads whose memory-cgroup accounting pointed to an
+  invalid address (`obj_cgroup_uncharge` → `refill_obj_stock`), on the PREEMPT_RT kernel. So it was a kernel bug,
+  with the container's library loading only supplying the memory pressure.
+  *Lessons:* on shared hardware an unexplained fault is a policy decision, not only a bug; and pstore keeps the
+  evidence across the reboot.
+- **Clock settings.** The board runs CPU and GPU with the `performance` governor, and another session may run
+  `jetson_clocks`. Recordings therefore note the board's state and flag fixed or changed clocks (F73).
+- **Permissions as configuration.** GPU debugging needs group `debug` (F75, F81) and kernel tracing needs root. Both
+  are one-time decisions of the board's owners, which jxb names instead of working around.
 
 ### 10.7 Upstream issues found
 
@@ -1506,21 +1687,31 @@ dependencies and lifecycle problems of Section 10.
 
 Open issues of the current state:
 
-- **Kernel tracing on the board** has only been tested against a mock tracefs; a real run needs root, i.e. a sudo
-  password typed by the user or explicit approval of the privileged-container route on the shared board.
-- **The reset of F56** is not explained (pstore needs root).
-- **Lyrical runtimes** (fixed 2026-11-04): `ros2 bag record` needs `--topics` there (F68), and SIGINT has to be
-  restored before `ros2 launch` because Ubuntu 26.04's `timeout` passes it on ignored (F69).
-- **Single board class.** Only an Orin Nano was available; AGX Orin and Thor (GPU variant `openrm`) are prepared in
-  the profile format but untested.
-- **Missing pieces of the SAM stack**: the Basler Pylon SDK, ros2_control and Gazebo (a size decision for the
-  sysroots), CUDA kernel debugging with `cuda-gdb`.
+- **One board.** Only one Orin Nano was available:
+  - Several boards were tried as two inventory names for that board (F78); parallel recordings on separate boards
+    are untested.
+  - AGX Orin and Thor (GPU variant `openrm`) are prepared in the profile format but untested.
+- **The RT kernel's reclaim bug** (F79) is NVIDIA's to fix. Until then, heavy memory pressure can reset the board.
+- **Kernel traces of heavy loads** need large ring buffers, ~50 MB per CPU for 30 s of the full stack (F80). jxb
+  reports the loss and the size needed, but doesn't stream the trace.
+- **The Basler Pylon SDK** needs its licence accepted; `pylon_camera_package` is the one SAM package not built.
 
-Planned next steps ([PLAN.md](../PLAN.md)): an `orin-agent` daemon with a stable API (health, deploy, run, logs,
-trace) as the common backend of `jxb` and the later JetsonPlanner GUI; multi-board deploys and synchronized traces
-on several boards with Perfetto as the common trace format; a provisioning bundle (apt repository with cross-built
-`.deb` files, container images, configuration) on top of stock JetPack, versioned together with the sysroot's
-package lock; and CI for images, sysroots and the probe tests.
+Planned next steps ([PLAN.md](../PLAN.md)):
+
+- ROS 2 callback tracing with LTTng in the timelines. It needs no root: the board has LTTng, and ROS 2's
+  `tracetools` link against it.
+- An `orin-agent` daemon with a stable API (health, deploy, run, logs, trace), as the common backend of `jxb` and the
+  later JetsonPlanner GUI. This needs a decision about services on shared boards.
+- A provisioning bundle on top of stock JetPack: an apt repository with cross-built `.deb` files, container images
+  and configuration, versioned together with the sysroot's package lock. This needs a board that may be reflashed.
+
+Done since the first version of this document:
+
+- multi-board commands and synchronized Perfetto timelines (Sections 6.8, 7.9);
+- CUDA kernel debugging (6.7) and GUI windows (6.9);
+- CI (5.8);
+- ros2_control and Gazebo in the Lyrical sysroots (F74);
+- the Lyrical runtime fixes (F68, F69).
 
 ---
 
@@ -1622,7 +1813,7 @@ within a release are ABI-compatible (F35). Major differences mean the board is n
 **A node finds the wrong ONNX Runtime.** jxb's GPU build comes first on `LD_LIBRARY_PATH` only through jxb's
 environment (`jxb run`, `jxb launch`, `jxb ssh`); a plain SSH shell sees the board's CPU-only `/opt/onnxruntime`.
 
-**Known issues.** ONNX Runtime's CUDA EP in container mode (F56); `pylon_camera_package` needs the Basler SDK; `micro_ros_agent` fails on Kilted (vendored Fast DDS
+**Known issues.** The RT kernel can panic in memory reclaim under heavy memory pressure (F79; it reset the board during F56), so ONNX Runtime's CUDA EP stays off in container mode; `pylon_camera_package` needs the Basler SDK; `micro_ros_agent` fails on Kilted (vendored Fast DDS
 references `tinyxml2::tinyxml2`, F54). More in [getting-started.md](getting-started.md), Section 6.
 
 ## Appendix E: glossary

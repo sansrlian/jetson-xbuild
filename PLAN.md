@@ -250,15 +250,16 @@ Like the Renesas RDK's VS Code tasks/launch configs, but as `jxb` commands first
 - [x] CUDA kernel debugging: NVIDIA's x86 `cuda-gdb` (in the xbuild image) debugs aarch64 through the board's
       `cuda-gdbserver`; `jxb debug --cuda`, `jxb gdb --cuda`, VS Code configuration; verified on the CPU side with
       SAM's detector (2026-11-09, F75)
-- [ ] GPU code under `jxb debug --cuda`: needs the board user in group `debug` (root, the owners' decision), then
-      a kernel breakpoint test
+- [x] GPU code under `jxb debug --cuda`: `nvidia` added to group `debug` (approved, 2026-11-10); breakpoints at
+      kernel entry verified in jxb's `axpy_kernel` and in SAM's detector (TensorRT/cuTENSOR kernels) (F81)
 - [x] Renesas-style launch mode: `jxb launch` (deploy of selected packages + the workspace's launch/config/
       assets files, `ros2 launch` of a package's or the workspace's launch file, clean SIGINT stop, process groups),
       `--monitor` (tegrastats + per-process CPU/RSS by ancestry), `--bag` (+ CSV of numeric topics), `--with`
       helpers (synthetic camera `tools/board/jxb_image_pub.py`), VS Code tasks with module/argument settings
 - [x] Native or container for every board command (`--mode`): SAM's detector verified natively on Jazzy and on
       Kilted (shipped ROS), and in the Kilted runtime container with TensorRT (within the run-to-run variation of native runs; F50,
-      F56, F63). ONNX Runtime's CUDA EP inside the container reset the board once: open, needs root to read pstore
+      F56, F63). ONNX Runtime's CUDA EP inside the container reset the board once: a kernel panic in memory
+      reclaim on the RT kernel, found in pstore (F79)
 - [x] Lyrical runtimes: bag recording (`--topics`) and clean SIGINT shutdown in the 26.04 container; `--monitor`
       records `/proc/meminfo`, `--mem-guard`, `--rates`; 25-minute stack run: memory saturates, no leak
       (2026-11-04, F68-F71)
@@ -269,7 +270,11 @@ Like the Renesas RDK's VS Code tasks/launch configs, but as `jxb` commands first
       found undeclared launch dependencies (topic_tools, foxglove_bridge, rplidar_ros, mavros; F52, F60), now added
       by `jxb-rosdeps`; all 12 processes run and stop cleanly natively and in the container (F59), a 25-minute run
       shows no memory leak (F71); analysis in docs/latex/measurements.pdf (2026-11-03/04)
-- [ ] Kernel trace of the stack (`jxb trace kernel`): needs root on the board (sudo password typed by the user)
+- [x] Kernel trace of the stack (`jxb trace kernel`, sudo typed by the user, 2026-11-10): wakeup latency p99
+      0.1-1.3 ms for executor and DDS threads, `nvmap-bz` 0.39 cores from per-frame GPU allocations, DDS loopback
+      softirqs 0.19 cores; the ring-buffer overflow it exposed is now reported and handled (`--buffer-mb`) (F80)
+- [x] Analyst's guide `docs/analysis.md`: questions to commands, reading the results, valid measurements on a shared
+      board, a worked example; tegrastats' real interval fitted from its timestamps (F82) (2026-11-10)
 
 ### Phase 2: Fleet and tracing
 - [ ] `orin-agent` v0 (health, deploy, run, logs, trace) + CLI on top. Open questions first: a daemon on a shared
@@ -282,7 +287,9 @@ Like the Renesas RDK's VS Code tasks/launch configs, but as `jxb` commands first
 - [x] Synchronized capture on N boards with Perfetto timelines: recordings measure their board's clock offset
       (~2 ms) and start time; `jxb trace perfetto` (tegrastats, processes, memory, rates, bag topics, nsys GPU
       kernels and NVTX), merged by itself for recordings of several boards (2026-11-09, F77)
-- [ ] ros2_tracing (LTTng) in the timelines: needs LTTng on the board (apt on a shared board: the owners' decision)
+- [ ] ros2_tracing (LTTng) in the timelines. No root or apt needed after all: the Nano already has lttng-tools 2.13,
+      liblttng-ust and babeltrace, and the ROS 2 `tracetools` libraries (Jazzy, and Kilted as jxb ships it) link
+      liblttng-ust, so a per-user LTTng session traces our own processes
 - [x] Lyrical mode (a): 26.04 Lyrical container on JetPack, GPU through the board's CDI spec; CUDA/cuDNN/TensorRT
       come from the board via nvidia-container-toolkit (no CUDA 13.2/TensorRT for 26.04 sbsa, findings F23); hybrid
       sysroot (26.04 + Lyrical + r39.2 dev debs); deployment in a mounted volume. Verified on the Nano: test suite,
@@ -290,7 +297,8 @@ Like the Renesas RDK's VS Code tasks/launch configs, but as `jxb` commands first
 - [x] CI: `.github/workflows/ci.yml` (shellcheck, Python syntax, analysis tests, CLI dry runs), `image.yml`
       (xbuild image of every profile when `docker/` or `profiles/` change), `board.yml` (sysroot + proof packages on
       a self-hosted runner, on demand: 16-19 GB per sysroot is more than GitHub's runners have) (2026-11-09)
-- [ ] Register a self-hosted runner (label `jxb`) for `board.yml`; first CI runs on GitHub after the push
+- [ ] Register a self-hosted runner (label `jxb`) for `board.yml`. On GitHub the image builds of all four profiles
+      pass; `ci.yml` failed once on a `bash -e` detail in its file-list step, fixed 2026-11-10
 
 ### Phase 3: Golden image (stock JetPack + bundle)
 Open question before this phase: W4 installs our `.deb`s with apt, but the shared Nano stays stock so far (jxb ships

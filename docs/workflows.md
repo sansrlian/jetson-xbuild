@@ -246,6 +246,8 @@ profile the board interactively over SSH), or run the board's own GUI here: `jxb
 
 The analysis gives mean/max of CPU and GPU load, clocks, RAM, temperatures and power rails, and the board's
 input energy (`VDD_IN` integrated over the recording). `--tegrastats` on `nsys` and `kernel` records it alongside.
+tegrastats samples 1.2-1.5 % slower than `--interval`; from 30 s of recording on, jxb fits the real interval from the
+lines' timestamps (`interval_real_ms` in summary.json) and uses it for times and energy (F82).
 
 ### Kernel trace: `jxb trace kernel`
 
@@ -261,10 +263,23 @@ tools on the board. Event presets: `sched` (switch, wakeup, migrate, exec/exit),
 `power` (CPU frequency and idle), `syscalls`, `workqueue`, or any tracefs event like `sched/sched_switch`. The
 helper restores the previous tracing state on exit, also on Ctrl-C.
 
+To trace a launch that needs helpers (a synthetic camera, other `--with` commands), start the launch without
+`--monitor` (that would hold the measurement lock) and record the kernel trace system-wide while it runs:
+
+```bash
+./jxb launch nano-lab --duration 120 --with "python3 {tools}/jxb_image_pub.py --rate 30 ..." -- launch/launch.py module:=parking &
+sleep 25 && ./jxb trace kernel nano-lab --duration 30 --tegrastats --label stack-parking
+```
+
 The analysis lists per task and per process the CPU time, context switches, preemptions and **wakeup latency**
 (`sched_wakeup` to running; relevant on the board's PREEMPT_RT kernel, e.g. for ROS executor threads), per-CPU
 busy time and IRQ/softirq handler times. `kernel.ftrace.txt` opens in [Perfetto](https://ui.perfetto.dev) as a
 timeline.
+
+ftrace keeps a ring buffer per CPU (`--buffer-mb`, default: the duration in seconds, 8-32 MB) and drops the oldest
+events when it is full: the full SAM stack writes ~300 000 events/s, ~50 MB per CPU for 30 s. When that happens the
+report says how much it kept, analyzes only the window every CPU covers, and names the `--buffer-mb` that would keep
+everything. Fewer events (`--events sched`) or a shorter `--duration` help too (F80).
 
 tracefs is root-only on JetPack. Three ways, chosen with `--root` or `trace_root` in `boards.toml`:
 

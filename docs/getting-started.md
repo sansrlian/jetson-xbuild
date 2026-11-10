@@ -91,6 +91,7 @@ jxb launch nano-lab --packages object_detection_package -- ...               # d
 jxb launch nano-lab -- launch/launch.py module:=core log_level:=INFO        # a launch file of the workspace
 jxb run nano-lab -- ros2 topic hz /object_detection/inference_time
 jxb ssh nano-lab                                              # look around on the board
+jxb gui nano-lab -- rqt                                       # a board program's window on your desktop
 ```
 
 - **Switch the ROS distro:** add `--profile jp721-lyrical-isaac` (or change `profile` in `jxb.toml`). Every
@@ -99,7 +100,11 @@ jxb ssh nano-lab                                              # look around on t
   image, like a development container on the PC. Use TensorRT engines rather than ONNX Runtime's CUDA EP there
   (see the notes on shared boards).
 - **Debug:** build the package with `--cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo`, then
-  `jxb debug nano-lab --pkg P --exe E` (add `--launch LP LF` to start it through a launch file).
+  `jxb debug nano-lab --pkg P --exe E` (add `--launch LP LF` to start it through a launch file). For CUDA code,
+  add `--cuda` (cuda-gdb); stopping inside CUDA kernels needs the board user in group `debug` once (jxb tells you).
+- **Several boards at once:** give a list, a group or all instead of one board, e.g. `jxb deploy nano-lab,agx-01`,
+  `jxb launch @lab -- ...`, `jxb run all -- uptime`. Groups and a ROS domain per board are set in `boards.toml`
+  (`groups = ["lab"]`, `ros_domain_id = 11`).
 - **Models and data files:** `launch/`, `assets/` and the `launch`/`config` folders of your packages are
   deployed with the build. Files that are only Git LFS pointers are skipped: run `git lfs pull` first.
 
@@ -115,7 +120,8 @@ This opens your workspace with ready-made tasks (Terminal > Run Task: `jxb: buil
 (Run and Debug: `jxb: debug node on board`). What they act on is set in the workspace file's settings:
 `jxb.profile`, `jxb.mode`, `jxb.board`, `jxb.package`, `jxb.executable`, `jxb.launchPackage`, `jxb.launchFile`,
 `jxb.launchArgs`. Your workspace's own `.vscode/` stays untouched. Run `init` again after updating jxb; your
-settings are kept.
+settings are kept. `jxb: debug node on board (CUDA)` debugs with cuda-gdb; with `--board A --board B` you get one
+debug configuration per board and `jxb: debug node on all boards`, which debugs them together.
 
 ## 4. Measure and analyze
 
@@ -130,6 +136,7 @@ jxb trace list                                                # all recordings
 jxb trace report nano-lab                                     # analysis of the latest one
 jxb trace plot nano-lab                                       # plots + report.md
 jxb trace compare traces/nano-lab/A traces/nano-lab/B --name my-test
+jxb trace perfetto traces/nano-lab/A traces/nano-lab/B        # one timeline, for ui.perfetto.dev
 ```
 
 - `--monitor` records CPU and RAM per node, the system's memory counters and tegrastats; `--bag` records topics,
@@ -138,7 +145,11 @@ jxb trace compare traces/nano-lab/A traces/nano-lab/B --name my-test
 - `--rates TOPIC ...` measures topic rates in one small probe process; `--mem-guard MB` stops the launch before the
   board runs out of memory (useful for long runs on a shared board).
 - Everything lands in `traces/<board>/<date>-<kind>-<label>/` on the PC; `summary.json` there is the
-  machine-readable result.
+  machine-readable result. Each recording also notes the board's clocks, power mode and temperatures, and its clock
+  offset to the PC, so recordings line up in time even on boards whose clock is wrong.
+- `jxb trace perfetto` puts recordings on one time axis (CPU, GPU, power, processes, topic rates, GPU kernels). Open
+  the file at https://ui.perfetto.dev with "Open trace file". A recording on several boards (`jxb trace ... a,b`)
+  writes this timeline by itself.
 - Kernel traces (`jxb trace kernel`) need root on the board: run them in a terminal and type the sudo
   password when asked.
 
@@ -171,10 +182,18 @@ More on every command: [workflows.md](workflows.md).
 | `not deploying incomplete packages` | those packages failed to build; the rest is deployed |
 | `... is busy with another measurement` | someone else is measuring; jxb waits up to an hour |
 | `jxb board check` shows `DIFF` | the board's package versions differ from the sysroot; minor versions are usually fine |
+| `GPU debugging is off for nvidia ...` | once, as root on the board: `sudo usermod -aG debug nvidia`; new SSH sessions then debug CUDA kernels |
+| `... has no cuda-gdb` | the profile's image predates CUDA debugging: `jxb --profile <p> image build`, then `jxb up --recreate` |
+| `boards A, B need different gdb_port values` | give each board its own `gdb_port` in `boards.toml` to debug them together |
+| report says `fixed clocks` or `CHANGED during the recording` | someone ran `jetson_clocks` or changed the power mode; measure again before comparing |
+| `no X display on this host` | `jxb gui` needs a desktop session on the PC (`DISPLAY`; on Wayland, XWayland provides one) |
 
 ## Read more
 
 - [README](../README.md): what jxb is and how it is built
-- [workflows.md](workflows.md): every workflow in detail (launch mode, `--mode`, VS Code, tracing)
+- [analysis.md](analysis.md): the analyst's guide: which recording answers which question, and how to read it
+- [workflows.md](workflows.md): every workflow in detail (launch mode, `--mode`, VS Code, CUDA debugging, several
+  boards, tracing, timelines, CI)
+- [system.md](system.md): how jxb works inside (also as PDF: `docs/latex/jxb.pdf`)
 - [findings.md](findings.md): measured baselines and the pitfalls found along the way
 - [PLAN.md](../PLAN.md): roadmap and decisions

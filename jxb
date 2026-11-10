@@ -55,7 +55,21 @@ import jxb_trace  # noqa: E402
 import jxb_vscode  # noqa: E402
 import jxb_launch  # noqa: E402
 
+VERSION = "1.0.0"   # CHANGELOG.md
 DRY_RUN = False
+
+
+def version_string() -> str:
+    """The version and the checkout it runs from (commit, -dirty with local changes); recordings note it."""
+    sha = subprocess.run(["git", "-C", str(REPO), "describe", "--always", "--dirty"], capture_output=True,
+                         text=True).stdout.strip()
+    return f"{VERSION} ({sha})" if sha else VERSION
+
+
+class _VersionAction(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None) -> None:
+        print(f"jxb {version_string()}")
+        parser.exit()
 
 
 def info(msg: str) -> None:
@@ -748,7 +762,10 @@ def cmd_debug(p: Profile, a) -> None:
     threading.Thread(target=lambda: [print(f"[board] {l.rstrip()}", flush=True) for l in proc.stdout],
                      daemon=True).start()
     gdb_args = ["-q", *(["--batch"] if a.batch else [])]
-    for cmd in [f"file {local}", f"target remote 127.0.0.1:{port}", *(a.gdb_cmd or [])]:
+    # cuda-gdb over cuda-gdbserver resumes in the background: batch commands after `continue` would run before the
+    # stop ("Cannot execute this command while the target is running")
+    sync = ["maint set target-async off"] if a.cuda and a.batch else []
+    for cmd in [*sync, f"file {local}", f"target remote 127.0.0.1:{port}", *(a.gdb_cmd or [])]:
         gdb_args += ["-ex", cmd]
     rc = subprocess.run(gdb_command(p, ws, gdb_args, cuda=a.cuda)).returncode
     proc.terminate()
@@ -886,6 +903,7 @@ def main() -> None:
     # could not be stopped with it (docs/findings.md F69): restore Python's KeyboardInterrupt handler.
     signal.signal(signal.SIGINT, signal.default_int_handler)
     ap = argparse.ArgumentParser(prog="jxb", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--version", action=_VersionAction, nargs=0, help="jxb's version and commit")
     ap.add_argument("--profile")
     ap.add_argument("--mode", choices=["auto", "native", "container"],
                     help="run on the board natively or in the profile's runtime container; auto (default, jxb.toml "

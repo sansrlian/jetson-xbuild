@@ -17,12 +17,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck (warnings and errors)
-        # every tracked shell script outside attic/, found by extension or shebang
+        # every tracked shell script outside attic/, found by extension or shebang (if, not &&: the step runs
+        # with bash -e, and a loop whose last test fails would end it)
         run: |
           git ls-files -z -- . ':!attic' | while IFS= read -r -d '' f; do
             case "$f" in
               *.sh) echo "$f" ;;
-              *) head -n1 "$f" 2>/dev/null | grep -qE '^#!.*\b(ba)?sh\b' && echo "$f" ;;
+              *) if head -n1 "$f" 2>/dev/null | grep -qE '^#!.*\b(ba)?sh\b'; then echo "$f"; fi ;;
             esac
           done > shell-files.txt
           cat shell-files.txt
@@ -32,7 +33,7 @@ jobs:
           git ls-files -z -- . ':!attic' | while IFS= read -r -d '' f; do
             case "$f" in
               *.py) echo "$f" ;;
-              *) head -n1 "$f" 2>/dev/null | grep -qE '^#!.*python' && echo "$f" ;;
+              *) if head -n1 "$f" 2>/dev/null | grep -qE '^#!.*python'; then echo "$f"; fi ;;
             esac
           done > python-files.txt
           cat python-files.txt

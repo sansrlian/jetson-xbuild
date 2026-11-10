@@ -183,7 +183,7 @@ def _save(board, p, a, kind: str, local: Path, remote: str, started: str, wall: 
         board.ssh(f"rm -rf {q(remote)}", check=False)
     meta = {"kind": kind, "board": board.name, "host": board.host, "profile": p.name, "ros_distro": p.distro,
             "label": a.label, "command": list(a.cmd), "started": started, "wall_s": round(wall, 3), "rc": rc,
-            "clock": clock_offset(board), **extra}
+            "clock": clock_offset(board), "jxb": J.version_string(), **extra}
     (local / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
     summary = analyze(local)
     print(json.dumps(summary, indent=2) if a.json else format_summary(summary))
@@ -357,23 +357,45 @@ def parse_tegrastats(line: str) -> dict | None:
     return s
 
 
+TEGRASTATS_STAMP_RE = re.compile(r"^(\d\d)-(\d\d)-(\d{4}) (\d\d):(\d\d):(\d\d) ")
+
+
+def tegrastats_interval(stamps: list[float | None], nominal_s: float) -> float:
+    """tegrastats' real sampling interval: its lines carry the board's clock to the second, and a linear fit over a
+    recording of 30 s or more pins the interval down to < 0.5 % (0.1 % over 25 minutes); on the Nano it is
+    1.2-1.5 % longer than --interval (F67). Shorter recordings, or a fit far from nominal, keep the nominal one."""
+    pts = [(i, t) for i, t in enumerate(stamps) if t is not None]
+    if len(pts) < 3 or pts[-1][1] - pts[0][1] < 30:
+        return nominal_s
+    slope = statistics.linear_regression([i for i, _ in pts], [t for _, t in pts]).slope
+    return slope if abs(slope / nominal_s - 1) < 0.05 else nominal_s
+
+
 def tegrastats_summary(log: Path, interval_ms: int) -> dict:
-    samples = [s for s in map(parse_tegrastats, log.read_text(errors="replace").splitlines()) if s]
+    samples, stamps = [], []
+    for line in log.read_text(errors="replace").splitlines():
+        s = parse_tegrastats(line)
+        if s:
+            samples.append(s)
+            m = TEGRASTATS_STAMP_RE.match(line)
+            stamps.append(dt.datetime(int(m[3]), int(m[1]), int(m[2]), int(m[4]), int(m[5]), int(m[6])).timestamp()
+                          if m else None)
+    interval = tegrastats_interval(stamps, interval_ms / 1000)
     keys = sorted({k for s in samples for k in s})
     with open(log.with_suffix(".csv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["t_s", *keys])
         w.writeheader()
         for i, s in enumerate(samples):
-            w.writerow({"t_s": round(i * interval_ms / 1000, 3), **s})
+            w.writerow({"t_s": round(i * interval, 3), **s})
     metrics = {}
     for k in keys:
         vals = [s[k] for s in samples if k in s]
         metrics[k] = {"mean": round(statistics.fmean(vals), 2), "min": min(vals), "max": max(vals)}
-    out = {"samples": len(samples), "interval_ms": interval_ms, "duration_s": len(samples) * interval_ms / 1000,
-           "metrics": metrics, "csv": log.with_suffix(".csv").name}
+    out = {"samples": len(samples), "interval_ms": interval_ms, "interval_real_ms": round(interval * 1000, 2),
+           "duration_s": round(len(samples) * interval, 2), "metrics": metrics, "csv": log.with_suffix(".csv").name}
     vin = [s["power_vdd_in_mw"] for s in samples if "power_vdd_in_mw" in s]
     if vin:   # board input power integrated over the recording
-        out["energy_j"] = round(sum(vin) * interval_ms / 1e6, 2)
+        out["energy_j"] = round(sum(vin) * interval / 1000, 2)
     return out
 
 
@@ -574,31 +596,67 @@ class SchedStats:
         }
 
 
-def kernel_summary(path: Path) -> dict:
+ENTRIES_RE = re.compile(r"^# entries-in-buffer/entries-written: (\d+)/(\d+)\s+#P:(\d+)")
+
+
+def kernel_summary(path: Path, buffer_mb: float | None = None) -> dict:
+    """Scheduler statistics of a recorded trace. When the ring buffer overflowed (entries written > entries kept),
+    the oldest events are gone and each CPU's data starts at a different time ("CPU N buffer started"): the
+    statistics then cover only the window that every CPU has, and `lost` says what a complete trace needs."""
+    kept = written = last_start = None
+    with open(path, errors="replace") as f:   # first pass: header and where the last CPU's data starts
+        for i, line in enumerate(f):
+            if line.startswith("##### CPU") and "buffer started" in line:
+                last_start = i
+            elif kept is None and (m := ENTRIES_RE.match(line)):
+                kept, written = int(m[1]), int(m[2])
     st = SchedStats()
+    pending = False
     with open(path, errors="replace") as f:
-        for line in f:
-            st.feed(line)
-    return st.summary()
+        for i, line in enumerate(f):
+            if i == last_start:
+                pending = True
+                continue
+            ts = st.feed(line)
+            if pending and ts is not None:   # the common window starts here; running tasks carry over
+                st.reset(ts)
+                pending = False
+    s = st.summary()
+    if written and kept is not None and written > kept:
+        s["lost"] = {"kept": kept, "written": written, "kept_pct": round(100 * kept / written, 1),
+                     "window": "common to all CPUs" if last_start is not None else "all events"}
+        if buffer_mb:   # the same load needs about written/kept times the buffer
+            s["lost"]["buffer_mb_needed"] = int(buffer_mb * written / kept * 1.1) + 1
+    return s
+
+
+def buffer_mb(a) -> int:
+    """Ring buffer per CPU for a recording: --buffer-mb, else growing with --duration (8-32 MB). The full SAM stack
+    writes ~300 000 events/s with the default presets, ~50 MB per CPU for 30 s; the report says what was lost."""
+    if getattr(a, "buffer_mb", None):
+        return a.buffer_mb
+    return 16 if not a.duration else min(32, max(8, a.duration))
 
 
 def _helper_cmd(board, a) -> tuple[list[str], str]:
-    """Copies jxb-ftrace.sh to the board and returns the root prefix that runs it (sudo, docker or as is)."""
+    """Copies jxb-ftrace.sh to the board and returns the root prefix that runs it (sudo, docker or as is), with the
+    ring buffer size (env: sudo resets the environment, but runs env with its arguments)."""
     root = _trace_root(board)
     helper = f"{root}/jxb-ftrace.sh"
     board.ssh(f"mkdir -p {q(root)}")
     J.sh(["rsync", "-a", "-e", shlex.join(["ssh", *board.ssh_opts]), str(J.REPO / "tools/board/jxb-ftrace.sh"),
           f"{board.target}:{helper}"])
+    buf = f"JXB_FTRACE_BUFFER_KB={buffer_mb(a) * 1024}"
     mode = a.root or board.cfg.get("trace_root", "sudo")
     if mode == "sudo":
-        return ["sudo", "-p", f"[jxb] sudo password for %u on {board.name} (kernel tracing): ", "sh"], helper
+        return ["sudo", "-p", f"[jxb] sudo password for %u on {board.name} (kernel tracing): ", "env", buf, "sh"], helper
     if mode == "docker":   # a privileged container: for users in the board's docker group
         image = board.cfg.get("trace_image")
         if not image:
             J.fail('--root docker needs trace_image = "<image with /bin/sh>" for the board in boards.toml')
         return ["docker", "run", "--rm", "-i", "--privileged", "-v", "/sys/kernel/tracing:/sys/kernel/tracing",
-                "-v", f"{root}:{root}", "--entrypoint", "sh", image], helper
-    return ["sh"], helper
+                "-v", f"{root}:{root}", "-e", buf, "--entrypoint", "sh", image], helper
+    return ["env", buf, "sh"], helper
 
 
 def _expand_events(spec: str) -> list[str]:
@@ -684,7 +742,7 @@ def cmd_kernel(p, a) -> None:
         J.fail("kernel tracing needs root on the board: run in a terminal (sudo asks for your password), or use "
                "--root docker (docker group) / --root none (tracefs made accessible), see docs/workflows.md")
     _save(board, p, a, "kernel", local, remote, started, time.time() - t0, rc, events=events,
-          interval_ms=a.interval if a.tegrastats else None)
+          interval_ms=a.interval if a.tegrastats else None, duration_s=a.duration or None, buffer_mb=buffer_mb(a))
 
 
 # ------------------------------------------------------------------------------------------- benchmark
@@ -1099,7 +1157,7 @@ def analyze(d: Path) -> dict:
     if (d / "tegrastats.log").exists():
         s["tegrastats"] = tegrastats_summary(d / "tegrastats.log", meta.get("interval_ms") or 500)
     if (d / "kernel.ftrace.txt").exists():
-        s["kernel"] = kernel_summary(d / "kernel.ftrace.txt")
+        s["kernel"] = kernel_summary(d / "kernel.ftrace.txt", meta.get("buffer_mb") or (8 if meta else None))
         s["kernel"]["file"] = "kernel.ftrace.txt"
     if (d / "results.jsonl").exists():
         s["bench"] = bench_summary(d / "results.jsonl")
@@ -1136,6 +1194,12 @@ def _table(rows: list[dict], cols: list[tuple[str, str, str]], limit: int = 10) 
 def format_kernel(k: dict, live: bool = False) -> str:
     lines = [f"kernel: {k['span_s']:.2f} s, {k['ctxsw_per_s'] or 0:.0f} ctxsw/s, CPU busy "
              + " ".join(f"cpu{c} {v:.0f}%" for c, v in k["cpu_busy_pct"].items() if v is not None)]
+    lost = k.get("lost")
+    if lost:
+        lines.append(f"  !! the ring buffer kept {lost['kept_pct']}% of the events ({lost['kept']} of {lost['written']}): "
+                     f"statistics over the last {k['span_s']:.1f} s ({lost['window']}). For all of it: "
+                     + (f"--buffer-mb {lost['buffer_mb_needed']}, " if lost.get("buffer_mb_needed") else "--buffer-mb, ")
+                     + "fewer events (--events sched) or a shorter --duration")
     rows = [{**t, "p99": (t["wakeup_us"] or {}).get("p99"), "max": (t["wakeup_us"] or {}).get("max")}
             for t in k["top_tasks"]]
     lines += _table(rows, [("cpu_pct", "cpu%", "6.2f"), ("switches", "switches", "8d"),
@@ -1376,6 +1440,8 @@ def register(sub, jxb) -> None:
     s.add_argument("--root", choices=["sudo", "docker", "none"],
                    help="how to get root for tracefs (default: boards.toml trace_root, else sudo)")
     s.add_argument("--tegrastats", action="store_true", help="record tegrastats alongside")
+    s.add_argument("--buffer-mb", type=int, help="ring buffer per CPU in MB (default: the duration in s, 8-32; the "
+                   "report says when events were lost and what would have kept them)")
     s = ts.add_parser("bench", help="inference benchmark matrix: ONNX Runtime EPs and TensorRT engines")
     s.add_argument("name", help="board (boards.toml)")
     s.add_argument("--models", nargs="+", required=True, metavar="ONNX", help="models to benchmark")

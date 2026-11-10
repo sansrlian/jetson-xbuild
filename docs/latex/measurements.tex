@@ -455,8 +455,11 @@ memory. The growth seen in the two-minute recordings is a warm-up of about three
 \textbf{The reset.} The board reset about 4\,s into a run of the detector with ONNX Runtime's CUDA EP inside the Kilted
 runtime container, while the EP was initializing (\finding{56}). \Cref{tab:reset} shows the last telemetry before the
 reset: memory rising from 1.39 to 1.50\,GB as the model loads, CPU load up to 44\,\%, GPU idle, at most 6.7\,W and
-49--50\,\si{\celsius}. At this resolution no thermal or power anomaly precedes the reset. Its cause remains unknown
-without the kernel's panic log, which requires root.
+49--50\,\si{\celsius}. At this resolution no thermal or power anomaly precedes the reset. The kernel's panic log, read
+later from pstore with root, explains it (\finding{79}): an Oops in \code{kswapd0}, during page reclaim, where freeing
+buffer heads charged to a memory cgroup dereferenced an invalid address (\code{obj_cgroup_uncharge} $\to$
+\code{refill_obj_stock}) on the PREEMPT\_RT kernel, followed by a kernel panic. It was a kernel bug; the CUDA EP's
+initialization in the container only supplied the memory pressure.
 
 \textbf{Long nsys sessions.} In two Nsight Systems recordings, the session stayed open long after the workload had
 ended (508\,s and 3800\,s). Nsight Systems waits for every process of the profiled tree, including processes that
@@ -558,12 +561,14 @@ falsify it with \jxb{}. \Cref{tab:hyp} ranks them by expected benefit and effort
 
 \begin{hypbox}{H1: Reusing device buffers in the image pipeline raises its frame rate}
 \textbf{Observation.} 16 allocation and free calls per frame, 9.1\,ms of blocking API time; \code{cudaFree}
-synchronizes the device (\cref{tab:per_frame}).
+synchronizes the device (\cref{tab:per_frame}). A kernel trace of the stack shows the cost on the kernel side too:
+nvmap's page-zeroing thread \code{nvmap-bz} takes 0.39 cores (\finding{80}).
 \par\textbf{Mechanism.} Frame-sized buffers are allocated per frame. Preallocating them once (buffer pool, CV-CUDA tensor
 reuse) or using the stream-ordered allocator with a memory-pool release threshold removes the calls and the implicit
 synchronization.
 \par\textbf{Prediction.} The allocation calls per frame drop from 16 to about 0; the image pipeline reaches at least
-28\,Hz with the 30\,Hz camera (lane points $\ge 28$\,Hz); its CPU share falls by 10--25\,\%.
+28\,Hz with the 30\,Hz camera (lane points $\ge 28$\,Hz); its CPU share falls by 10--25\,\%, and up to 0.4 cores of
+kernel page zeroing disappear.
 \par\textbf{Test.} Patch the image processing component; record \code{jxb trace nsys} (allocations per frame) and
 \code{jxb launch --monitor --bag} (lane-point rate, CPU) before and after, three runs each.
 \end{hypbox}
@@ -598,7 +603,9 @@ priorities (\code{SCHED_FIFO}) and CPU affinity for the detector, and a high-pri
 shorten its waits.
 \par\textbf{Prediction.} In-stack median below 20\,ms and p99 below 25\,ms, at unchanged total CPU.
 \par\textbf{Test.} Launch the node with \code{chrt}/\code{taskset} as launch prefix; \code{jxb trace kernel} for the
-wakeup latency of the detector's threads (needs root); A/B of the bag's inference times.
+wakeup latency of the detector's threads; A/B of the bag's inference times. Baseline (\finding{80}): the detector's
+DDS receive thread waits 3\,\si{\micro\second} (p50) and 114\,\si{\micro\second} (p99) after a wakeup, its main thread
+7\,\si{\micro\second} (p50) with one outlier of 172\,ms in 54 wakeups.
 \end{hypbox}
 
 \begin{hypbox}{H5: Decoupling inference from the 5\,Hz timer multiplies the detection rate}
@@ -671,7 +678,7 @@ Rank & & Expected benefit & Effort \\
 3 & \hyp{3} & detector $-3$ to $-5$\,ms alone, more in the stack & preprocessing change or model with 8-bit input \\
 4 & \hyp{2} & most copies and CPU memcpy removed; lower memory power & design change across components \\
 5 & \hyp{5} & 4--6$\times$ detection rate at +1.5--2.5\,W & parameter or callback change \\
-6 & \hyp{4} & bounded detector latency under load & launch configuration, root for verification \\
+6 & \hyp{4} & bounded detector latency under load & launch configuration; baseline measured (\finding{80}) \\
 7 & \hyp{8} & more precise experiments & tooling \\
 8 & \hyp{9} & frame rate or energy trade-off & board configuration (shared) \\
 9 & \hyp{10} & faster CUDA EP & only if ONNX Runtime stays \\

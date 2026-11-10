@@ -102,6 +102,29 @@ class KernelTest(unittest.TestCase):
                          ["sched/sched_switch", "sched/sched_wakeup"])
         self.assertEqual(jxb_trace._expand_events("irq,irq").count("irq/irq_handler_entry"), 1)
 
+    def test_ring_buffer_overflow(self):
+        # the buffer kept 11 of 44 events; CPU 1's data starts after CPU 0's: statistics from that marker on
+        head, events = FTRACE.split("\n", 4)[:4], FTRACE.split("\n", 4)[4]
+        lines = events.splitlines()
+        text = "\n".join([head[0], "#", "# entries-in-buffer/entries-written: 11/44   #P:6", *head[1:],
+                          *lines[:4], "##### CPU 1 buffer started ####", *lines[4:]]) + "\n"
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "kernel.ftrace.txt"
+            f.write_text(text)
+            k = jxb_trace.kernel_summary(f, buffer_mb=8)
+        self.assertEqual(k["lost"]["kept_pct"], 25.0)
+        self.assertEqual(k["lost"]["buffer_mb_needed"], 36)       # 8 MB * 44/11 * 1.1, rounded up
+        self.assertEqual(k["lost"]["window"], "common to all CPUs")
+        self.assertAlmostEqual(k["span_s"], 1000.010000 - 1000.006000, places=6)   # from the marker on
+        self.assertIn("ring buffer kept 25.0%", jxb_trace.format_kernel(k))
+        self.assertIn("--buffer-mb 36", jxb_trace.format_kernel(k))
+        with tempfile.TemporaryDirectory() as d:   # nothing lost: no `lost`, all events
+            f = Path(d) / "kernel.ftrace.txt"
+            f.write_text(FTRACE)
+            k = jxb_trace.kernel_summary(f, buffer_mb=8)
+        self.assertNotIn("lost", k)
+        self.assertAlmostEqual(k["span_s"], 0.01, places=6)
+
 
 class NsysTest(unittest.TestCase):
     def test_sqlite(self):
@@ -269,6 +292,24 @@ class BoardStateTest(unittest.TestCase):
                                 start_new_session=True, timeout=30).returncode
             self.assertEqual(rc, 130)
             self.assertTrue((Path(d) / "board_state_end.txt").exists())
+
+
+class TegrastatsIntervalTest(unittest.TestCase):
+    def test_real_interval_from_stamps(self):
+        # 130 samples every 506 ms (nominal 500 ms), stamped to the second like tegrastats does
+        lines = []
+        for i in range(130):
+            t = 1209000 + i * 0.506
+            stamp = jxb_trace.dt.datetime.fromtimestamp(int(t)).strftime("%m-%d-%Y %H:%M:%S")
+            lines.append(f"{stamp} RAM 1800/7486MB CPU [10%@1344] GR3D_FREQ 0% VDD_IN 5000mW/5000mW/5000mW")
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "tegrastats.log"
+            log.write_text("\n".join(lines) + "\n")
+            s = jxb_trace.tegrastats_summary(log, 500)
+        self.assertAlmostEqual(s["interval_real_ms"], 506, delta=1.5)
+        self.assertAlmostEqual(s["energy_j"], 130 * 5.0 * 0.506, delta=0.5)   # 5 W over the real duration
+        short = [None, 1.0, 1.5]   # too short to fit: the nominal interval stays
+        self.assertEqual(jxb_trace.tegrastats_interval(short, 0.5), 0.5)
 
 
 class PerfettoTest(unittest.TestCase):
