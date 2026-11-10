@@ -1628,11 +1628,28 @@ $t_{\text{host}} = (w_0 - \hat\theta) + (u - u_0)$.
 UI opens. Each recording becomes one process, a group of tracks: its board state as an instant event; counter tracks
 for tegrastats (CPU, GPU, RAM, board power, junction temperature), each session process's CPU and RSS, the memory
 counters, topic rates and numeric bag topics; and slices for nsys's GPU kernels (one track per CUDA stream) and NVTX
-ranges. Times are the host's (\cref{sec:boardstate}), so recordings of several boards made at once line up, and a
+ranges, and ROS~2 callbacks (\code{--ros-trace}) per thread (\cref{sec:rostrace}). Times are the host's (\cref{sec:boardstate}), so recordings of several boards made at once line up, and a
 fan-out recording writes the merged timeline by itself. Two independent sources agree in a recorded launch: the
 first inference (bag, board clock) is at $+5.09$\,s, the rise of GPU load (tegrastats, start plus sampling interval)
 at $+5.00$\,s; nsys kernels fall inside their NVTX ranges (\finding{77}). Perfetto's UI loads \code{?url=} traces only
 from \code{127.0.0.1:9001} (its content security policy), so files are opened with ``Open trace file''.
+
+\subsection{ROS 2 tracing}\label{sec:rostrace}
+\code{jxb launch --ros-trace} and \code{jxb trace ros} record ROS~2's own tracepoints, which the \code{tracetools}
+package compiles into rcl and rclcpp; the libraries link against LTTng's userspace tracer. The Nano ships lttng-tools
+2.13, and \code{lttng create} as an ordinary user starts a session daemon for that user, so this needs neither root nor
+packages (\finding{83}). The wrapper creates a session with one userspace channel (8 $\times$ 1\,MB sub-buffers per
+CPU), enables \code{ros2:*} with the context \code{vpid}, \code{vtid} and \code{procname}, runs the launch, stops and
+destroys the session and converts the trace with \code{babeltrace --clock-seconds}. \code{RosTrace} resolves what every
+callback serves from the setup events: nodes, subscriptions (\code{rcl_subscription_init} $\to$
+\code{rclcpp_subscription_init} $\to$ \code{rclcpp_subscription_callback_added}), timers with period and node,
+services, publishers and the C++ symbol (\code{rclcpp_callback_register}). The session therefore has to start before
+the nodes do, which \code{--ros-trace} ensures. From the run events it computes each callback's execution intervals per
+thread, publish counts per topic and, for each taken message, its age (\code{rmw_take}: take time minus the DDS source
+timestamp, i.e.\ transport plus queueing), all on the board's clock, which the timeline maps to the host's
+(\cref{sec:boardstate}). In SAM's detector this showed images taken 0.32\,s after they were published: a keep-last-10
+queue drained by \code{spin_some()} at 5\,Hz (\finding{83}). Container mode is not supported yet; the runtime container
+would need the user's LTTng socket directory and the session daemon's shared memory.
 
 % ======================================================================================================== 8
 \section{VS Code integration}\label{sec:vscode}
@@ -2077,20 +2094,19 @@ Open issues of the current state:
         (\finding{78}); parallel recordings on separate boards are untested. AGX Orin and Thor (GPU variant
         \code{openrm}) are prepared in the profile format but untested.
   \item \textbf{The RT kernel's reclaim bug} (\finding{79}) is NVIDIA's to fix; until then, heavy memory pressure can
-        reset the board.
+        reset the board; it most likely hit again while the full stack started natively (\finding{84}).
   \item \textbf{Kernel traces of heavy loads} need large ring buffers, about 50\,MB per CPU for 30\,s of the full stack
         (\finding{80}); \jxb{} reports the loss and the size needed, but doesn't stream the trace.
   \item \textbf{The Basler Pylon SDK} needs its licence accepted; \code{pylon_camera_package} is the one SAM package not
         built.
 \end{itemize}
-Planned next steps (\code{PLAN.md}): ROS~2 callback tracing with LTTng in the timelines (no root needed: the board has
-LTTng, and ROS~2's \code{tracetools} link against it); an \code{orin-agent} daemon with a stable API (health, deploy,
+Planned next steps (\code{PLAN.md}): ROS~2 tracing in container mode; an \code{orin-agent} daemon with a stable API (health, deploy,
 run, logs, trace) as the common back end of \jxb{} and the later JetsonPlanner GUI, which needs a decision about
 services on shared boards; and a provisioning bundle on top of stock JetPack (apt repository with cross-built packages,
 container images, configuration) versioned together with the sysroot's package lock, which needs a board that may be
 reflashed. Done since the first version of this document: multi-board commands and synchronized Perfetto timelines
 (\cref{sec:fleet,sec:timeline}), CUDA kernel debugging (\cref{sec:debug}), GUI windows, CI, ros2\_control and Gazebo in
-the Lyrical sysroots (\finding{74}), and the Lyrical runtime fixes (\finding{68}, \finding{69}).
+the Lyrical sysroots (\finding{74}), ROS~2 callback tracing (\cref{sec:rostrace}), the analyst's guide, and the Lyrical runtime fixes (\finding{68}, \finding{69}).
 
 % ======================================================================================================== 13
 \section{Conclusion}
@@ -2125,10 +2141,10 @@ Command & Purpose \\
 \path{jxb deploy B [--ws WS] [--packages P ...] [--no-files]} & deploy a workspace \\
 \path{jxb run B -- CMD}, \code{jxb ssh B} & command or shell on the board with the deployment's environment \\
 \path{jxb gui B -- PROGRAM} & a board program as a window here (X11 over SSH) \\
-\path{jxb launch B [--packages ...] [--monitor] [--bag [T ...]] [--with CMD] [--duration S] -- TARGET} & deploy and launch, optionally recorded \\
+\path{jxb launch B [--packages ...] [--monitor] [--bag [T ...]] [--with CMD] [--rates T ...] [--mem-guard MB] [--ros-trace] [--duration S] -- TARGET} & deploy and launch, optionally recorded \\
 \path{jxb debug B --pkg P --exe E [--launch PKG FILE] [--server-only] [--cuda]} & remote debugging (\code{--cuda}: cuda-gdbserver and cuda-gdb) \\
 \path{jxb gdb [--cuda] [-- ARGS]} & cross gdb (or cuda-gdb) for the profile \\
-\path{jxb trace nsys | tegrastats | kernel | bench B ...} & recordings on the board \\
+\path{jxb trace nsys | tegrastats | kernel | bench | ros B ...} & recordings on the board (\code{ros}: ROS~2 callbacks with LTTng) \\
 \path{jxb trace report | plot | compare | perfetto | list | gui} & analysis on the host; \code{perfetto}: one timeline of recordings \\
 \path{jxb vscode init -w WS [--board B ...] [--pkg P --exe E]} & VS Code workspace (several \code{--board}: debugging on all of them at once) \\
 \bottomrule
@@ -2172,6 +2188,7 @@ Key & Present for & Content \\
 \endhead
 \code{trace}, \code{dir}, \code{meta} & all & name, directory, \code{meta.json} \\
 \code{board_state} & all (since 2026-11-04) & \code{start}, \code{end}: \code{nvpmodel}; \codeb{cpu.<policy>} (\code{governor}, \code{min_mhz}, \code{max_mhz}, \code{cur_mhz}, \code{hw_min_mhz}, \code{hw_max_mhz}); \codeb{devfreq.<device>} (\code{governor}, \code{min_mhz}, \code{max_mhz}, \code{cur_mhz}; GPU, EMC = \code{bwmgr}, engines); \code{cpuidle} (\code{states}, \code{disabled}); \code{gpu_railgate}; \code{fan}; \code{temp_c}; \code{fixed} (clocks with minimum = maximum, disabled idle states); \code{changed} (settings that differ between start and end) \\
+\code{ros} & \code{--ros-trace}, \code{trace ros} & \code{span_s}, \code{events}, \code{callbacks_run}, \code{nodes}; \code{callbacks[]} (\code{what}, \code{node}, \code{process}, \code{symbol}, \code{n}, \code{mean_ms}, \code{p50_ms}, \code{p99_ms}, \code{max_ms}, \code{total_ms}, \code{busy_pct}); \code{topics[]} (\code{publish_hz}, \code{takes}, \code{latency_p50_ms}, \code{latency_p99_ms}); \code{discarded_events} \\
 \code{nsys} & nsys & \code{span_s}; \code{gpu} (\code{kernel_launches}, \code{kernel_time_ms}, \code{busy_ms}, \code{busy_pct}, \code{top_kernels}); \code{memcpy}; \code{cuda_api}; \code{nvtx}; \code{os_runtime}; \code{cpu_samples}; \code{processes} \\
 \code{tegrastats} & monitored runs & \code{samples}, \code{interval_ms}, \code{duration_s}, \codeb{metrics.<key>.{mean,min,max}}, \code{energy_j}, \code{csv} \\
 \code{processes} & \code{--monitor} & \code{session_cpu_pct}, \code{session_rss_mb}, \code{monitor_cpu_pct}; \code{session[]}, \code{top[]} with \code{cpu_share_pct}, \code{cpu_mean_pct}, \code{cpu_max_pct}, \code{rss_max_mb}, \code{series} \\

@@ -62,6 +62,9 @@ jobs:
             ./jxb --profile "$p" --dry-run launch ci --no-deploy --monitor --rates /chatter --duration 5 \
               -- demo_nodes_cpp talker.launch.py > /dev/null
             ./jxb --profile "$p" --dry-run trace tegrastats ci --duration 5 > /dev/null
+            ./jxb --profile "$p" --dry-run launch ci --no-deploy --ros-trace --duration 5 \
+              -- demo_nodes_cpp talker.launch.py > /dev/null
+            ./jxb --profile "$p" --dry-run trace ros ci --duration 5 > /dev/null
           done
           mkdir -p "$RUNNER_TEMP/ws/src"
           ./jxb --profile jp721-kilted vscode init -w "$RUNNER_TEMP/ws" --board ci --pkg demo --exe demo

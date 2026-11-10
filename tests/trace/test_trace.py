@@ -377,6 +377,66 @@ class PerfettoTest(unittest.TestCase):
                          ["nano: 20261109-120000-launch-x", "nano: 20261109-115959-tegrastats"])
 
 
+# babeltrace --clock-seconds --no-delta of ROS 2 tracepoints (format as recorded on nano-lab)
+CTX = '{ cpu_id = 1 }, { vpid = 10, vtid = 10, procname = "detector" }'
+ROS_TRACE = "\n".join(f"[{ts}] nano-001 ros2:{ev}: {ctx}, {{ {fields} }}" for ts, ev, fields, ctx in [
+    ("1000.000100000", "rcl_node_init", 'node_handle = 0xA1, rmw_handle = 0xB1, node_name = "object_detection", '
+                                        'namespace = "/"', CTX),
+    ("1000.000200000", "rcl_subscription_init", 'subscription_handle = 0xC1, node_handle = 0xA1, '
+     'rmw_subscription_handle = 0xD1, topic_name = "/camera/image", queue_depth = 10', CTX),
+    ("1000.000300000", "rclcpp_subscription_init", "subscription_handle = 0xC1, subscription = 0xE1", CTX),
+    ("1000.000400000", "rclcpp_subscription_callback_added", "subscription = 0xE1, callback = 0xF1", CTX),
+    ("1000.000500000", "rclcpp_callback_register", 'callback = 0xF1, symbol = "std::_Bind<void (Detector::*(Detector*, '
+     'std::_Placeholder<1>))(std::shared_ptr<sensor_msgs::msg::Image const> const&)>"', CTX),
+    ("1000.000600000", "rcl_timer_init", "timer_handle = 0x71, period = 100000000", CTX),
+    ("1000.000700000", "rclcpp_timer_callback_added", "timer_handle = 0x71, callback = 0xF2", CTX),
+    ("1000.000800000", "rclcpp_timer_link_node", "timer_handle = 0x71, node_handle = 0xA1", CTX),
+    ("1000.000900000", "rcl_publisher_init", 'publisher_handle = 0x91, node_handle = 0xA1, rmw_publisher_handle = 0x92, '
+     'topic_name = "/detections", queue_depth = 10', CTX),
+    ("1000.100000000", "rmw_take", "rmw_subscription_handle = 0xD1, message = 0x1, source_timestamp = 1000050000000, "
+     "taken = 1", CTX),
+    ("1000.100010000", "callback_start", "callback = 0xF1, is_intra_process = 0", CTX),
+    ("1000.120010000", "rcl_publish", "publisher_handle = 0x91, message = 0x2", CTX),
+    ("1000.122010000", "callback_end", "callback = 0xF1", CTX),
+    ("1000.200000000", "callback_start", "callback = 0xF2, is_intra_process = 0", CTX.replace("vtid = 10", "vtid = 11")),
+    ("1000.200500000", "callback_end", "callback = 0xF2", CTX.replace("vtid = 10", "vtid = 11")),
+]) + "\n"
+
+
+class RosTraceTest(unittest.TestCase):
+    def test_summary(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "ros2.txt"
+            f.write_text(ROS_TRACE)
+            (Path(d) / "ros2.log").write_text("[warning] Tracer discarded 7 events between [a] and [b] in trace\n")
+            r = jxb_trace.ros_summary(f)
+        cbs = {c["what"]: c for c in r["callbacks"]}
+        self.assertEqual(r["nodes"], ["/object_detection"])
+        self.assertEqual((cbs["sub /camera/image"]["n"], cbs["sub /camera/image"]["mean_ms"]), (1, 22.0))
+        self.assertEqual(cbs["sub /camera/image"]["node"], "/object_detection")
+        self.assertIn("std::_Bind<void (Detector::*(Detector*,", cbs["sub /camera/image"]["symbol"])
+        self.assertEqual((cbs["timer 100 ms"]["node"], cbs["timer 100 ms"]["mean_ms"]), ("/object_detection", 0.5))
+        topics = {t["topic"]: t for t in r["topics"]}
+        self.assertEqual(topics["/camera/image"]["latency_p50_ms"], 50.0)    # take 1000.1 s, source 1000.05 s
+        self.assertAlmostEqual(topics["/detections"]["publish_hz"], 1 / 0.2004, places=2)
+        self.assertEqual(r["discarded_events"], 7)
+        self.assertIn("LTTng discarded 7 events", "\n".join(jxb_trace.format_ros(r)))
+
+    def test_timeline_slices(self):
+        import jxb_perfetto
+        with tempfile.TemporaryDirectory() as d:
+            rec = Path(d) / "nano" / "20261110-120000-launch-x"
+            rec.mkdir(parents=True)
+            (rec / "meta.json").write_text(json.dumps({"board": "nano", "clock": {"offset_s": -1.0e9}}))
+            (rec / "board_state_start.txt").write_text("clock:1000.0 50.0\n")
+            (rec / "ros2.txt").write_text(ROS_TRACE)
+            ev = json.loads((jxb_perfetto.export([rec], Path(d) / "t.json"), (Path(d) / "t.json").read_text())[1])
+        cb = next(e for e in ev["traceEvents"] if e.get("name") == "sub /camera/image")
+        self.assertAlmostEqual(cb["ts"], 100010.0, places=1)    # 0.10001 s after the recording's start, in us
+        self.assertAlmostEqual(cb["dur"], 22000.0, places=1)
+        self.assertIn("detector 10", [e["args"]["name"] for e in ev["traceEvents"] if e.get("name") == "thread_name"])
+
+
 class MeminfoTest(unittest.TestCase):
     def test_trend(self):
         lines = ["R 100"]

@@ -289,6 +289,30 @@ tracefs is root-only on JetPack. Three ways, chosen with `--root` or `trace_root
 | `docker` | a privileged container runs the helper (`trace_image = "<image with /bin/sh>"` in `boards.toml`) | for users in the board's `docker` group (root-equivalent), no password; on a shared board only with the owner's explicit OK |
 | `none` | runs the helper as the SSH user | when tracefs was made accessible on the board |
 
+### ROS 2 callbacks: `jxb launch --ros-trace`, `jxb trace ros`
+
+```bash
+./jxb launch nano-lab --ros-trace --monitor --duration 30 -- object_detection_package object_detection_launch.py
+./jxb trace ros nano-lab --duration 20 -- ros2 run pkg node     # standalone recording while a command runs
+```
+
+Records ROS 2's own tracepoints (`tracetools`) with LTTng:
+
+- **No root and nothing to install:** the board has lttng-tools 2.13, the ROS libraries link against `liblttng-ust`,
+  and `lttng` starts a session daemon for the user.
+- **Setup events:** the session starts before the nodes, so their setup events name every callback. The report then
+  lists, per callback, the node, the topic or timer (`sub /camera/image`, `timer 100 ms`, `srv ...`) and the C++
+  symbol, with count, mean, p99 and max duration and its share of the recording.
+- **Topics:** publish rates, and the transport latency of taken messages, from the DDS source timestamp to the take:
+  the age of the data a callback works on.
+- **Timelines:** `jxb trace perfetto` shows the callbacks as slices, one track per thread.
+- **Files:** `ros2.txt` holds the converted trace (`babeltrace`, board clock in seconds), `lttng/` the CTF original
+  (Trace Compass, babeltrace2).
+- **Discarded events:** LTTng discards events when its buffers fill, and the report says how many.
+
+Native mode only for now: processes in the runtime container don't reach the board's session daemon. Processes
+started before the recording have no setup events, so their callbacks show as symbols or addresses only.
+
 ### Inference benchmarks: `jxb trace bench`
 
 ```bash

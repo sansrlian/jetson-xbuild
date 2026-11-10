@@ -1353,6 +1353,7 @@ opens. Each recording becomes one process, a group of tracks:
 - counter tracks: tegrastats (CPU, GPU, RAM, board power, junction temperature), each session process's CPU and
   RSS, the memory counters, topic rates and numeric bag topics;
 - slices: nsys's GPU kernels (one track per CUDA stream) and NVTX ranges.
+- slices: ROS 2 callbacks (`--ros-trace`), one track per thread, named by topic or timer (Section 7.10).
 
 Times are the host's (Section 7.8), so recordings of several boards made at once line up. A fan-out recording
 writes the merged timeline by itself.
@@ -1361,6 +1362,39 @@ Two independent sources agree in a recorded launch: the first inference (bag, bo
 rise of GPU load (tegrastats, start plus sampling interval) at +5.00 s. nsys kernels fall inside their NVTX ranges
 (F77). Perfetto's UI loads `?url=` traces only from `127.0.0.1:9001` (its content security policy), so files are
 opened with "Open trace file".
+
+
+### 7.10 ROS 2 tracing
+
+`jxb launch --ros-trace` and `jxb trace ros` record ROS 2's own tracepoints. The `tracetools` package compiles them
+into rcl and rclcpp, and the libraries link against LTTng's userspace tracer. The Nano ships lttng-tools 2.13, and
+`lttng create` as an ordinary user starts a session daemon for that user, so this needs neither root nor packages
+(F83).
+
+The wrapper (`with_ros_trace`) runs on the board host:
+
+1. It creates a session with one userspace channel (8 × 1 MB sub-buffers per CPU).
+2. It enables `ros2:*` with the context `vpid`, `vtid` and `procname`.
+3. It runs the launch, then stops and destroys the session.
+4. It converts the trace with `babeltrace --clock-seconds`.
+
+`RosTrace` then resolves what every callback serves from the setup events: nodes (`rcl_node_init`); subscriptions
+(`rcl_subscription_init` → `rclcpp_subscription_init` → `rclcpp_subscription_callback_added`); timers with their
+period and node; services; publishers; and the C++ symbol (`rclcpp_callback_register`). The tracing session
+therefore has to start before the nodes do, which `--ros-trace` ensures.
+
+From the run events it computes:
+
+- each callback's execution intervals per thread (`callback_start`/`callback_end`);
+- publish counts per topic (`rcl_publish`);
+- for each taken message, its age (`rmw_take`: take time minus the DDS source timestamp), which is transport plus
+  queueing.
+
+All of these are on the board's clock, which the timeline maps to the host's (Section 7.8).
+
+In SAM's detector this showed images taken 0.32 s after they were published: a keep-last-10 queue drained by
+`spin_some()` at 5 Hz (F83). Container mode is not supported yet, since the runtime container would need the user's
+LTTng socket directory and the session daemon's shared memory.
 
 ---
 
@@ -1691,15 +1725,15 @@ Open issues of the current state:
   - Several boards were tried as two inventory names for that board (F78); parallel recordings on separate boards
     are untested.
   - AGX Orin and Thor (GPU variant `openrm`) are prepared in the profile format but untested.
-- **The RT kernel's reclaim bug** (F79) is NVIDIA's to fix. Until then, heavy memory pressure can reset the board.
+- **The RT kernel's reclaim bug** (F79) is NVIDIA's to fix. Until then, heavy memory pressure can reset the board;
+  it most likely hit again while the full stack started natively (F84).
 - **Kernel traces of heavy loads** need large ring buffers, ~50 MB per CPU for 30 s of the full stack (F80). jxb
   reports the loss and the size needed, but doesn't stream the trace.
 - **The Basler Pylon SDK** needs its licence accepted; `pylon_camera_package` is the one SAM package not built.
 
 Planned next steps ([PLAN.md](../PLAN.md)):
 
-- ROS 2 callback tracing with LTTng in the timelines. It needs no root: the board has LTTng, and ROS 2's
-  `tracetools` link against it.
+- ROS 2 tracing in container mode: the runtime container needs access to the user's LTTng session daemon.
 - An `orin-agent` daemon with a stable API (health, deploy, run, logs, trace), as the common backend of `jxb` and the
   later JetsonPlanner GUI. This needs a decision about services on shared boards.
 - A provisioning bundle on top of stock JetPack: an apt repository with cross-built `.deb` files, container images
@@ -1711,6 +1745,7 @@ Done since the first version of this document:
 - CUDA kernel debugging (6.7) and GUI windows (6.9);
 - CI (5.8);
 - ros2_control and Gazebo in the Lyrical sysroots (F74);
+- ROS 2 callback tracing with LTTng (7.10), the analyst's guide (`docs/analysis.md`);
 - the Lyrical runtime fixes (F68, F69).
 
 ---
@@ -1746,10 +1781,10 @@ log do, is what makes the system maintainable.
 | `jxb deploy B [--ws WS] [--packages P ...] [--no-files]` | deploy a workspace |
 | `jxb run B -- CMD`, `jxb ssh B` | command / shell on the board with the deployment's environment |
 | `jxb gui B -- PROGRAM` | a board program as a window here (X11 over SSH) |
-| `jxb launch B [--packages ...] [--monitor] [--bag [T ...]] [--with CMD] [--duration S] -- TARGET` | deploy and launch, optionally recorded |
+| `jxb launch B [--packages ...] [--monitor] [--bag [T ...]] [--with CMD] [--rates T ...] [--mem-guard MB] [--ros-trace] [--duration S] -- TARGET` | deploy and launch, optionally recorded |
 | `jxb debug B --pkg P --exe E [--launch PKG FILE] [--server-only] [--cuda]` | remote debugging (`--cuda`: cuda-gdbserver + cuda-gdb) |
 | `jxb gdb [--cuda] [-- ARGS]` | cross gdb (or cuda-gdb) for the profile |
-| `jxb trace nsys \| tegrastats \| kernel \| bench B ...` | recordings on the board |
+| `jxb trace nsys \| tegrastats \| kernel \| bench \| ros B ...` | recordings on the board (`ros`: ROS 2 callbacks with LTTng) |
 | `jxb trace report \| plot \| compare \| perfetto \| list \| gui` | analysis on the host; `perfetto`: one timeline of recordings |
 | `jxb vscode init -w WS [--board B ...] [--pkg P --exe E]` | VS Code workspace (several `--board`: debugging on all of them at once) |
 
@@ -1787,6 +1822,7 @@ them). The board argument of `deploy`, `run`, `launch`, `test --board`, `board c
 |---|---|---|
 | `trace`, `dir`, `meta` | all | name, directory, `meta.json` |
 | `board_state` | all (since 2026-11-04) | `start`, `end`: `nvpmodel`, `cpu.<policy>` (`governor`, `min_mhz`, `max_mhz`, `cur_mhz`, `hw_min_mhz`, `hw_max_mhz`), `devfreq.<device>` (`governor`, `min_mhz`, `max_mhz`, `cur_mhz`; GPU, EMC = `bwmgr`, engines), `cpuidle` (`states`, `disabled`), `gpu_railgate`, `fan`, `temp_c`; `fixed` (clocks with minimum = maximum, disabled idle states), `changed` (settings that differ between start and end) |
+| `ros` | `--ros-trace`, `trace ros` | `span_s`, `events`, `callbacks_run`, `nodes`, `callbacks[]` (`what`, `node`, `process`, `symbol`, `n`, `mean_ms`, `p50_ms`, `p99_ms`, `max_ms`, `total_ms`, `busy_pct`), `topics[]` (`publish_hz`, `takes`, `latency_p50_ms`, `latency_p99_ms`), `discarded_events` |
 | `nsys` | nsys | `span_s`, `gpu` (`kernel_launches`, `kernel_time_ms`, `busy_ms`, `busy_pct`, `top_kernels`), `memcpy`, `cuda_api`, `nvtx`, `os_runtime`, `cpu_samples`, `processes` |
 | `tegrastats` | `--tegrastats`, `--monitor`, bench | `samples`, `interval_ms`, `duration_s`, `metrics.<key>.{mean,min,max}`, `energy_j`, `csv` |
 | `processes` | `--monitor` | `session_cpu_pct`, `session_rss_mb`, `monitor_cpu_pct`, `session[]`/`top[]` with `cpu_share_pct`, `cpu_mean_pct`, `cpu_max_pct`, `rss_max_mb`, `series` |

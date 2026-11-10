@@ -7,6 +7,8 @@
   jxb trace kernel NAME [--events sched,irq,power] [--duration S] [--live [--top]] [--root sudo|docker|none]
       [-- CMD ...]   ftrace via tracefs (scheduler, IRQs, CPU frequency/idle). Needs root on the board: by
       default sudo asks for your password in the terminal (jxb never handles passwords)
+  jxb trace ros NAME [--duration S] [-- CMD ...]   ROS 2 callbacks, topics, executors with LTTng (no root; also
+                                                     jxb launch --ros-trace)
   jxb trace report [DIR|BOARD|latest] [--json]      analysis of a recording (writes summary.json)
   jxb trace perfetto [DIR|BOARD|latest ...]         one timeline of recordings (several boards: one time axis)
                                                      for https://ui.perfetto.dev (jxb_perfetto.py)
@@ -134,6 +136,26 @@ BOARD_STATE = (
     "/sys/class/devfreq/*/{governor,min_freq,max_freq,cur_freq} /sys/devices/platform/gpu.0/railgate_enable "
     "/sys/devices/platform/pwm-fan*/hwmon/hwmon*/pwm[0-9] /sys/class/thermal/thermal_zone*/{type,temp} "
     "2>/dev/null; true")
+
+
+def with_ros_trace(remote: str, command: str, session: str) -> str:
+    """Runs a board-host command inside an LTTng userspace session that records ROS 2's tracepoints (`tracetools`,
+    which the ROS libraries link against). No root: lttng starts a session daemon for the user, and processes of the
+    user register with it. Afterwards babeltrace converts the trace to text with the board's clock in seconds
+    (ros2.txt; its warnings, e.g. discarded events, in ros2.log); `.ros2-done` marks the end."""
+    lt = f"{remote}/lttng"
+    start = (f"lttng create {q(session)} --output={q(lt)} > /dev/null && "
+             f"lttng enable-channel --userspace --session={q(session)} --subbuf-size=1M --num-subbuf=8 jxb > /dev/null && "
+             f"lttng enable-event --userspace --session={q(session)} --channel=jxb 'ros2:*' > /dev/null && "
+             f"lttng add-context --userspace --session={q(session)} --channel=jxb -t vpid -t vtid -t procname > /dev/null && "
+             f"lttng start {q(session)} > /dev/null")
+    stop = (f"lttng stop {q(session)} > /dev/null 2>&1; lttng destroy {q(session)} > /dev/null 2>&1; "
+            f"babeltrace --clock-seconds --no-delta {q(lt)} > {q(remote + '/ros2.txt')} 2> {q(remote + '/ros2.log')}")
+    script = (f"mkdir -p {q(remote)}; traced=; if command -v lttng > /dev/null && {start}; then traced=1; else "
+              f"echo '[jxb] no ROS 2 trace: lttng is missing or failed on this board' >&2; fi; "
+              f"trap : INT TERM HUP; ( {command} ); rc=$?; if [ -n \"$traced\" ]; then {stop}; fi; "
+              f"touch {q(remote + '/.ros2-done')}; exit $rc")
+    return f"bash -c {q(script)}"
 
 
 def with_board_state(remote: str, command: str) -> str:
@@ -453,6 +475,32 @@ def cmd_tegrastats(p, a) -> None:
     rc = board.ssh(locked(board, f"jxb trace tegrastats {local.name}", with_board_state(remote, script), a),
                    tty=_tty() and bool(a.cmd), check=False)
     _save(board, p, a, "tegrastats", local, remote, started, time.time() - t0, rc, interval_ms=a.interval)
+
+
+# ------------------------------------------------------------------------------------------- ROS 2 trace
+def cmd_ros(p, a) -> None:
+    """ROS 2 callbacks, topics and executors with LTTng (with_ros_trace): while CMD runs, or for --duration. Start
+    the nodes inside the recording (CMD, or jxb launch --ros-trace) to see which topic or timer each callback serves."""
+    board = J.Board(a.name, p)
+    if J.uses_container(p, board):
+        J.fail("ROS 2 tracing runs natively for now (--mode native): processes in the runtime container don't reach "
+               "the board's LTTng session daemon")
+    local, remote = _new_trace(board, "ros", a.label)
+    if a.cmd:
+        ws = Path(a.ws or Path.cwd()).resolve()
+        run = (["timeout", "--foreground", "-s", "INT", str(a.duration)] if a.duration else []) + \
+            J.board_launch_args(board, ws, a.cmd)
+        inner = J.board_exec(p, board, J.board_env_script(p, board, ws) + shlex.join(run), tty=_tty())
+    else:
+        inner = f"sleep {a.duration or 10}"
+    if a.tegrastats:
+        inner = _with_tegrastats(f"{remote}/tegrastats.log", a.interval, inner)
+    J.info(f"ROS 2 trace on {board.name}" + (f": {shlex.join(a.cmd)}" if a.cmd else f" for {a.duration or 10} s"))
+    started, t0 = _now(), time.time()
+    script = with_board_state(remote, with_ros_trace(remote, inner, f"jxb-{local.name}"))
+    rc = board.ssh(locked(board, f"jxb trace ros {local.name}", script, a), tty=_tty() and bool(a.cmd), check=False)
+    _save(board, p, a, "ros", local, remote, started, time.time() - t0, rc,
+          interval_ms=a.interval if a.tegrastats else None)
 
 
 # ------------------------------------------------------------------------------------------ kernel trace
@@ -1000,6 +1048,161 @@ def cmd_gui(p, a) -> None:
 
 
 # --------------------------------------------------------------------------------------- report / list
+# --------------------------------------------------------------------------------------------- ROS 2 trace
+# babeltrace --clock-seconds --no-delta: "[1209925.940334512] nano-001 ros2:callback_start: { cpu_id = 3 },
+# { vpid = 623999, vtid = 623999, procname = "throttle" }, { callback = 0xAAAB0789A7C0, is_intra_process = 0 }"
+ROS_LINE_RE = re.compile(r"^\[(?P<ts>\d+\.\d+)\] \S+ ros2:(?P<event>\w+): (?P<rest>.*)$")
+ROS_FIELD_RE = re.compile(r'(\w+) = ("(?:[^"\\]|\\.)*"|[^,}\s]+)')
+
+
+def _ros_value(v: str):
+    if v.startswith('"'):
+        return v[1:-1].replace('\\"', '"')
+    try:
+        return int(v)
+    except ValueError:
+        return v
+
+
+def _short_symbol(sym: str | None, width: int = 70) -> str:
+    if not sym:
+        return "?"
+    s = re.sub(r"\s+", " ", sym.replace("std::", ""))
+    return s if len(s) <= width else s[:width - 3] + "..."
+
+
+class RosTrace:
+    """ROS 2 tracepoints (babeltrace text): what each callback serves (from the init events of nodes, subscriptions,
+    timers, services, publishers), the callbacks' execution intervals per thread, publishes per topic and the
+    transport latency of taken messages (DDS source timestamp to take). Init events are only recorded when tracing
+    starts before the nodes do (jxb launch --ros-trace)."""
+
+    def __init__(self, path: Path):
+        self.nodes, self.symbols, self.cb_info, self.topics_pub, self.rmw_sub_topic = {}, {}, {}, {}, {}
+        subs, sub_objs, timers, timer_node, services = {}, {}, {}, {}, {}
+        self.intervals: list[tuple] = []                  # (start, end, vtid, procname, callback)
+        self.publishes: dict[str, int] = defaultdict(int)
+        self.latency: dict[str, list[float]] = defaultdict(list)
+        self.events = 0
+        self.t0 = self.t1 = None
+        open_cb: dict[tuple, float] = {}
+        with open(path, errors="replace") as f:
+            for line in f:
+                m = ROS_LINE_RE.match(line)
+                if not m:
+                    continue
+                ts, ev = float(m["ts"]), m["event"]
+                fl = {k: _ros_value(v) for k, v in ROS_FIELD_RE.findall(m["rest"])}
+                self.events += 1
+                self.t0 = ts if self.t0 is None else self.t0
+                self.t1 = ts
+                if ev == "callback_start":
+                    open_cb[(fl.get("vtid"), fl.get("callback"))] = ts
+                elif ev == "callback_end":
+                    start = open_cb.pop((fl.get("vtid"), fl.get("callback")), None)
+                    if start is not None:
+                        self.intervals.append((start, ts, fl.get("vtid"), fl.get("procname"), fl.get("callback")))
+                elif ev == "rcl_publish":
+                    self.publishes[self.topics_pub.get(fl.get("publisher_handle"), "?")] += 1
+                elif ev == "rmw_take":
+                    src = fl.get("source_timestamp")
+                    topic = self.rmw_sub_topic.get(fl.get("rmw_subscription_handle"))
+                    if fl.get("taken") == 1 and isinstance(src, int) and src > 0 and topic:
+                        self.latency[topic].append(ts - src / 1e9)
+                elif ev == "rcl_node_init":
+                    ns = str(fl.get("namespace", "/")).rstrip("/")
+                    self.nodes[fl.get("node_handle")] = f"{ns}/{fl.get('node_name')}"
+                elif ev == "rcl_subscription_init":
+                    subs[fl.get("subscription_handle")] = (fl.get("node_handle"), fl.get("topic_name"))
+                    self.rmw_sub_topic[fl.get("rmw_subscription_handle")] = fl.get("topic_name")
+                elif ev == "rclcpp_subscription_init":
+                    sub_objs[fl.get("subscription")] = fl.get("subscription_handle")
+                elif ev == "rclcpp_subscription_callback_added":
+                    node, topic = subs.get(sub_objs.get(fl.get("subscription")), (None, None))
+                    self.cb_info[fl.get("callback")] = ("subscription", topic, node)
+                elif ev == "rcl_timer_init":
+                    timers[fl.get("timer_handle")] = fl.get("period")
+                elif ev == "rclcpp_timer_link_node":
+                    timer_node[fl.get("timer_handle")] = fl.get("node_handle")
+                elif ev == "rclcpp_timer_callback_added":
+                    period = timers.get(fl.get("timer_handle"))
+                    what = f"timer {period / 1e6:g} ms" if isinstance(period, int) else "timer"
+                    self.cb_info[fl.get("callback")] = ("timer", what, fl.get("timer_handle"))
+                elif ev == "rcl_service_init":
+                    services[fl.get("service_handle")] = (fl.get("node_handle"), fl.get("service_name"))
+                elif ev == "rclcpp_service_callback_added":
+                    node, name = services.get(fl.get("service_handle"), (None, None))
+                    self.cb_info[fl.get("callback")] = ("service", name, node)
+                elif ev == "rcl_publisher_init":
+                    self.topics_pub[fl.get("publisher_handle")] = fl.get("topic_name")
+                elif ev == "rclcpp_callback_register":
+                    self.symbols[fl.get("callback")] = fl.get("symbol")
+        # timers know their node only after rclcpp_timer_link_node, which follows the callback registration
+        for cb, (kind, what, ref) in list(self.cb_info.items()):
+            if kind == "timer":
+                self.cb_info[cb] = (kind, what, timer_node.get(ref))
+
+    def label(self, cb) -> str:
+        kind, what, _ = self.cb_info.get(cb, (None, None, None))
+        if kind == "subscription":
+            return f"sub {what}"
+        if kind == "service":
+            return f"srv {what}"
+        return what or _short_symbol(self.symbols.get(cb), 40)
+
+    def node(self, cb) -> str | None:
+        return self.nodes.get(self.cb_info.get(cb, (None, None, None))[2])
+
+
+def ros_summary(path: Path, top: int = 25) -> dict:
+    """Callback durations per callback (what it serves, node, symbol), publish rates and take latency per topic,
+    and the events LTTng had to discard (babeltrace's warnings in ros2.log)."""
+    rt = RosTrace(path)
+    span = (rt.t1 - rt.t0) if rt.t0 is not None else 0.0
+    by_cb: dict = defaultdict(list)
+    procs: dict = {}
+    for start, end, _, proc, cb in rt.intervals:
+        by_cb[cb].append(end - start)
+        procs[cb] = proc
+    rows = []
+    for cb, ds in sorted(by_cb.items(), key=lambda kv: -sum(kv[1]))[:top]:
+        ds = sorted(ds)
+        rows.append({"callback": str(cb), "what": rt.label(cb), "node": rt.node(cb), "process": procs.get(cb),
+                     "symbol": rt.symbols.get(cb), "n": len(ds), "mean_ms": round(statistics.fmean(ds) * 1e3, 3),
+                     "p50_ms": round(_pct(ds, 0.5) * 1e3, 3), "p99_ms": round(_pct(ds, 0.99) * 1e3, 3),
+                     "max_ms": round(ds[-1] * 1e3, 3), "total_ms": round(sum(ds) * 1e3, 1),
+                     "busy_pct": round(100 * sum(ds) / span, 2) if span else None})
+    topics = []
+    for topic in sorted(set(rt.publishes) | set(rt.latency)):
+        lat = sorted(rt.latency.get(topic, []))
+        topics.append({"topic": topic, "publish_hz": round(rt.publishes.get(topic, 0) / span, 2) if span else None,
+                       "takes": len(lat), "latency_p50_ms": round(_pct(lat, 0.5) * 1e3, 3) if lat else None,
+                       "latency_p99_ms": round(_pct(lat, 0.99) * 1e3, 3) if lat else None})
+    log = path.with_name("ros2.log")
+    discarded = sum(int(n) for n in re.findall(r"discarded (\d+) events", log.read_text(errors="replace"))) \
+        if log.exists() else 0
+    return {"span_s": round(span, 3), "events": rt.events, "callbacks_run": len(rt.intervals),
+            "nodes": sorted(set(rt.nodes.values())), "callbacks": rows, "topics": topics,
+            "discarded_events": discarded, "file": path.name}
+
+
+def format_ros(r: dict) -> list[str]:
+    lines = [f"ROS 2 trace: {r['callbacks_run']} callbacks in {r['span_s']:.1f} s, {len(r['nodes'])} nodes, "
+             f"{r['events']} events" + (f"; !! LTTng discarded {r['discarded_events']} events" if r["discarded_events"]
+                                         else "")]
+    if r["callbacks"]:
+        lines += _table(r["callbacks"], [("n", "n", "6d"), ("mean_ms", "mean ms", "8.3f"), ("p99_ms", "p99 ms", "8.3f"),
+                                         ("max_ms", "max ms", "8.3f"), ("busy_pct", "busy%", "6.2f"),
+                                         ("node", "node", ""), ("what", "callback", "")], limit=15)
+    if any(t["takes"] or t["publish_hz"] for t in r["topics"]):
+        lines.append("  topics:")
+        lines += _table([t for t in r["topics"] if t["takes"] or t["publish_hz"]],
+                        [("publish_hz", "pub Hz", "7.2f"), ("takes", "takes", "6d"),
+                         ("latency_p50_ms", "lat p50ms", "9.3f"), ("latency_p99_ms", "lat p99ms", "9.3f"),
+                         ("topic", "topic", "")], limit=20)
+    return lines
+
+
 # ----------------------------------------------------------------------------------------------- board state
 CPUFREQ_KEYS = {"scaling_governor": "governor", "scaling_min_freq": "min_mhz", "scaling_max_freq": "max_mhz",
                 "scaling_cur_freq": "cur_mhz", "cpuinfo_min_freq": "hw_min_mhz", "cpuinfo_max_freq": "hw_max_mhz"}
@@ -1170,6 +1373,8 @@ def analyze(d: Path) -> dict:
             s["meminfo"] = mem
     if (d / "rates.log").exists():
         s["rates"] = rates_summary(d / "rates.log")
+    if (d / "ros2.txt").exists():
+        s["ros"] = ros_summary(d / "ros2.txt")
     if (d / "memguard.log").exists():
         s["memguard"] = (d / "memguard.log").read_text(errors="replace").strip()
     if (d / "bag/metadata.yaml").exists():
@@ -1291,6 +1496,8 @@ def format_summary(s: dict) -> str:
             lines.append("  " + ", ".join(nvmap))
     if s.get("memguard"):
         lines.append(f"  {s['memguard']}")
+    if s.get("ros"):
+        lines += format_ros(s["ros"])
     for topic, r in (s.get("rates") or {}).items():
         lines.append(f"rate {topic}: median {r['median_hz']:.1f} Hz (p10 {r['p10_hz']:.1f}, p90 {r['p90_hz']:.1f}, "
                      f"{r['reports']} reports)")
@@ -1442,6 +1649,9 @@ def register(sub, jxb) -> None:
     s.add_argument("--tegrastats", action="store_true", help="record tegrastats alongside")
     s.add_argument("--buffer-mb", type=int, help="ring buffer per CPU in MB (default: the duration in s, 8-32; the "
                    "report says when events were lost and what would have kept them)")
+    s = recording("ros", "ROS 2 callbacks, topics and executors with LTTng, no root [-- CMD ...]", cmd_ros)
+    s.add_argument("--duration", type=int, help="seconds (default: while CMD runs; without CMD 10)")
+    s.add_argument("--tegrastats", action="store_true", help="record tegrastats alongside")
     s = ts.add_parser("bench", help="inference benchmark matrix: ONNX Runtime EPs and TensorRT engines")
     s.add_argument("name", help="board (boards.toml)")
     s.add_argument("--models", nargs="+", required=True, metavar="ONNX", help="models to benchmark")

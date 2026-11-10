@@ -4,7 +4,8 @@ https://ui.perfetto.dev opens.
 
 Each recording becomes a process group of tracks: its board state at the start; tegrastats counters (CPU, GPU,
 RAM, board power, temperature); CPU and RSS of the session's processes; memory counters; topic rates; numeric bag
-topics; the GPU kernels and NVTX ranges of an nsys recording. The time axis is this host's clock: a board's
+topics; the GPU kernels and NVTX ranges of an nsys recording; ROS 2 callbacks (--ros-trace) per thread. The time axis
+is this host's clock: a board's
 timestamps (often without NTP) are mapped with the offset measured after the recording (meta.json "clock") and
 the board's clock and uptime at its start (board_state_start.txt). Recordings without them (before 2026-11-09)
 are placed by their host start time, to the second.
@@ -141,7 +142,27 @@ def _add_recording(tl: Timeline, pid: int, r: Recording) -> list[str]:
 
     if (d / "report.sqlite").exists():
         have += _add_nsys(tl, pid, r, d / "report.sqlite")
+    if (d / "ros2.txt").exists():
+        have += _add_ros(tl, pid, r, d / "ros2.txt")
     return have
+
+
+def _add_ros(tl: Timeline, pid: int, r: Recording, path: Path) -> list[str]:
+    """ROS 2 callbacks (jxb launch --ros-trace) as slices, one track per thread, named by topic or timer."""
+    rt = jxb_trace.RosTrace(path)
+    if not rt.intervals:
+        return []
+    first = min(start for start, *_ in rt.intervals)
+    threads = {}
+    for start, end, vtid, proc, cb in rt.intervals:
+        tid = 2_000_000 + int(vtid or 0)   # clear of the GPU stream (1000+) and NVTX (999) tracks
+        threads[tid] = f"{proc} {vtid}"
+        tl.events.append({"ph": "X", "pid": pid, "tid": tid, "name": rt.label(cb),
+                          "ts": tl.us(r.from_board(start, first)), "dur": round((end - start) * 1e6, 1),
+                          "args": {"node": rt.node(cb), "symbol": rt.symbols.get(cb)}})
+    for tid, name in sorted(threads.items()):
+        tl.thread(pid, tid, name)
+    return [f"{len(rt.intervals)} ROS callbacks"]
 
 
 def _add_nsys(tl: Timeline, pid: int, r: Recording, db: Path) -> list[str]:

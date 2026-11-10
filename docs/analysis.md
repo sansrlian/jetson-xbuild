@@ -31,6 +31,7 @@ workspace directory, with `jxb` on your PATH (or `./jxb` in the jxb repository).
 | How fast is my model on this GPU, and which backend wins? | `jxb trace bench B --models m.onnx` | p50/p99 latency, FPS and the speedup of each backend (ONNX Runtime CPU/CUDA/TensorRT EP, TensorRT engines; fp32/fp16/INT8) |
 | What does my node or stack cost? | `jxb launch B --monitor --duration 60 -- PKG FILE` | per-process CPU and RSS, board power and energy, GPU load |
 | How long does each frame take? | `... --bag /node/inference_time --rates /camera/camera_info` | the numeric topic's p50/p99 (`bag`), topic rates |
+| Which callback takes how long, and how old is the data it works on? | `jxb launch B --ros-trace --duration 30 -- PKG FILE` | per callback (node, topic or timer): count, mean/p99/max; per topic: publish rate, take latency |
 | Where does the GPU time go? | `jxb trace nsys B --duration 20 --tegrastats -- ros2 launch PKG FILE` | top kernels, GPU busy %, copies, CUDA API calls (allocations per frame!), NVTX ranges |
 | Are my threads scheduled in time? What interferes? | `jxb trace kernel B --duration 10` (root) | wakeup latency p50/p99/max per thread, preemptions, IRQ and softirq time per handler |
 | Does memory grow or leak? | `jxb launch B --monitor --mem-guard 1200 --duration 1500 -- ...` | `memory:` trends in MB/min (MemAvailable, Cached, Shmem, NvMap), RSS over time |
@@ -81,8 +82,13 @@ details in [docs/latex/measurements.pdf](latex/measurements.pdf) and the finding
    39 % of a core. DDS moving the camera images over loopback costs 19 % of a core in network softirqs. The
    executor and DDS threads wait 0.1-1.3 ms (p99) for a CPU after a wakeup, on CPUs that are ~54 % busy (F80).
 5. `jxb launch --mem-guard`, 25 minutes: memory grows for three minutes and then stays flat; no leak (F71).
+6. `jxb launch --ros-trace` of the detector: its image callback runs 4.1 times per second (22 ms mean), while the
+   camera publishes 25.8 images per second. Each image it takes is 0.32 s old. The node subscribes with the default
+   QoS (reliable, keep last 10) and calls `spin_some()` at 5 Hz, so it always works on the oldest of the ten queued
+   frames (F83). Keep-last-1 would hand it the newest frame.
 
-So the image pipeline's per-frame buffer allocation is the first optimization target, not the detector's GPU time.
+So the image pipeline's per-frame buffer allocation is the first optimization target, not the detector's GPU time,
+and the detector's queue makes its detections a third of a second late.
 
 ## Automation
 
@@ -101,6 +107,7 @@ So the image pipeline's per-frame buffer allocation is the first optimization ta
 | `rate` lower than the publisher's | the probe can't keep up with large messages (F70) | probe a small companion topic |
 | tegrastats durations and energies 1.2-1.5 % off | its real interval is longer than `--interval` (F67) | from 30 s on, jxb fits the real interval from the samples' timestamps (`interval_real_ms`) and uses it for times and energy |
 | Timestamps in 1970 in board logs | the board runs without NTP (F35) | jxb maps them to the PC's clock (F77) |
-| Board reset during a run | a kernel bug in memory reclaim on the RT kernel (F79) | keep memory pressure low (`--mem-guard`); report what you ran |
+| Board reset during a run | a kernel bug in memory reclaim on the RT kernel (F79); it hit twice, once while the full stack started (F84) | keep memory pressure low (`--mem-guard`), start heavy stacks one at a time, tell the board's other users; the crash log is in pstore (root) |
+| ROS callbacks named only by address | the processes started before the recording | start them inside it: `jxb launch --ros-trace` |
 | Kernel trace shorter than `--duration` | ring buffer overflow | `--buffer-mb` as the report suggests |
 | `fixed clocks` in the report | someone ran `jetson_clocks` | wait for the default clocks or compare only with runs at the same clocks |

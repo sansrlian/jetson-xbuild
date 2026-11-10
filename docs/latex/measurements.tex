@@ -610,10 +610,14 @@ DDS receive thread waits 3\,\si{\micro\second} (p50) and 114\,\si{\micro\second}
 
 \begin{hypbox}{H5: Decoupling inference from the 5\,Hz timer multiplies the detection rate}
 \textbf{Observation.} The node infers at a fixed 5\,Hz; with TensorRT, its GPU is busy only 5--8\,\% and an inference
-takes 17\,ms.
-\par\textbf{Mechanism.} Event-driven inference on every new frame, or a configurable rate.
-\par\textbf{Prediction.} Detections at the image pipeline's rate (20--30\,Hz) for +1.5 to +2.5\,W. Alternatively, at 5\,Hz, the
-INT8 n-model lowers the energy per detection.
+takes 17\,ms. A ROS~2 trace (\code{jxb launch --ros-trace}, \finding{83}) adds that every image it takes is 0.32\,s old:
+the node subscribes with the default QoS (reliable, keep last 10) and calls \code{spin_some()} at 5\,Hz, so each spin
+takes the oldest of the ten queued frames.
+\par\textbf{Mechanism.} Event-driven inference on every new frame, or a configurable rate; keep-last-1 (sensor-data QoS)
+so that every inference uses the newest frame.
+\par\textbf{Prediction.} Detections at the image pipeline's rate (20--30\,Hz) for +1.5 to +2.5\,W, each on a frame
+younger than one frame period plus the inference. Alternatively, at 5\,Hz, the INT8 n-model lowers the energy per
+detection, and keep-last-1 alone cuts the frames' age from 0.32\,s to below 0.2\,s.
 \par\textbf{Test.} Rate sweep (5, 10, 15, 20, 30\,Hz) with \code{jxb launch --monitor --bag}: detection rate, inference
 time, power.
 \end{hypbox}

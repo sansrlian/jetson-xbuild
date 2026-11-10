@@ -86,6 +86,7 @@ ssh-copy-id nvidia@192.168.178.83
 ./jxb trace kernel nano-lab --live --top                                       # ftrace scheduler stats (sudo on the board)
 ./jxb trace report nano-lab                                                    # analysis of the latest recording
 ./jxb trace perfetto nano-lab                                                  # timeline for ui.perfetto.dev
+./jxb launch nano-lab --ros-trace --duration 30 -- object_detection_package object_detection_launch.py   # ROS 2 callbacks
 ./jxb vscode init -w ~/ros2_ws --pkg object_detection_package --exe object_detection
 ```
 

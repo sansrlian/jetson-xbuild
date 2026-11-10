@@ -287,9 +287,11 @@ Like the Renesas RDK's VS Code tasks/launch configs, but as `jxb` commands first
 - [x] Synchronized capture on N boards with Perfetto timelines: recordings measure their board's clock offset
       (~2 ms) and start time; `jxb trace perfetto` (tegrastats, processes, memory, rates, bag topics, nsys GPU
       kernels and NVTX), merged by itself for recordings of several boards (2026-11-09, F77)
-- [ ] ros2_tracing (LTTng) in the timelines. No root or apt needed after all: the Nano already has lttng-tools 2.13,
-      liblttng-ust and babeltrace, and the ROS 2 `tracetools` libraries (Jazzy, and Kilted as jxb ships it) link
-      liblttng-ust, so a per-user LTTng session traces our own processes
+- [x] ros2_tracing (LTTng): `jxb launch --ros-trace`, `jxb trace ros` (no root: the board has LTTng 2.13 and the ROS
+      libraries link liblttng-ust); callback durations per node and topic/timer, publish rates, take latency,
+      callbacks in the timelines. Found the detector working on 0.32 s old frames (F83) (2026-11-10)
+- [ ] ROS 2 tracing in container mode (the runtime container needs the user's LTTng socket directory)
+- [ ] Read the pstore records of the second reset (F84, root) to confirm the reclaim bug of F79
 - [x] Lyrical mode (a): 26.04 Lyrical container on JetPack, GPU through the board's CDI spec; CUDA/cuDNN/TensorRT
       come from the board via nvidia-container-toolkit (no CUDA 13.2/TensorRT for 26.04 sbsa, findings F23); hybrid
       sysroot (26.04 + Lyrical + r39.2 dev debs); deployment in a mounted volume. Verified on the Nano: test suite,

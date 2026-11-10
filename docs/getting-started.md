@@ -24,6 +24,7 @@ installs nothing on them and writes only to `~/jxb/`.
 | Record load, power, GPU | `jxb launch --monitor`, `jxb trace ...` | Nsight Systems, tegrastats, kernel trace, benchmarks |
 | Look at the results | `jxb trace report\|plot\|compare` | text, `summary.json`, plots |
 | One timeline of recordings | `jxb trace perfetto ...` | for ui.perfetto.dev; several boards on one time axis |
+| ROS 2 callback timing | `jxb launch --ros-trace`, `jxb trace ros` | per callback and topic, with LTTng (no root) |
 
 Profiles (all for JetPack 7.2.1, CUDA 13.2, TensorRT 10.16):
 

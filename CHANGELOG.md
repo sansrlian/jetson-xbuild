@@ -2,6 +2,15 @@
 
 `jxb --version` prints the version and the commit; every recording's `meta.json` notes it (`jxb`).
 
+## 1.1.0 (2026-11-10)
+
+- **ROS 2 tracing** with LTTng, no root: `jxb launch --ros-trace` and `jxb trace ros`. The report gives per callback
+  (node, topic, timer or service, C++ symbol) the count and the mean, p99 and max durations; per topic the publish rate
+  and the age of taken messages (DDS source timestamp to take). Timelines show the callbacks per thread. Native mode
+  only for now (F83).
+- Findings F83 (the detector works on 0.32 s old frames: a keep-last-10 queue drained at 5 Hz) and F84 (a second board
+  reset, most likely the reclaim bug of F79, while the full stack started).
+
 ## 1.0.0 (2026-11-10)
 
 The first complete release: cross-development, deployment, debugging and analysis of ROS 2 / CUDA / TensorRT

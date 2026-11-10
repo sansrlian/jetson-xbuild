@@ -17,6 +17,8 @@ the end of --duration stops the launch with SIGINT, so the nodes shut down clean
               push a shared board into the out-of-memory killer
   --rates T   message rate of the given topics once a second (tools/board/jxb_rate_probe.py: raw subscriptions,
               no deserialization, unlike `ros2 topic hz`)
+  --ros-trace ROS 2 callbacks, publishes and takes with LTTng (no root, native mode): callback durations per node and
+              topic/timer, publish rates, transport latency, and callback slices in `jxb trace perfetto`
 
 The launch log, recordings and their analysis (`jxb trace report`, `jxb trace plot`) land in
 traces/<board>/<stamp>-launch-<label>/.
@@ -143,7 +145,13 @@ def cmd_launch(p, a) -> None:
     mode = "container" if container else "native"
     J.info(f"launch on {board.name} ({mode}): {shlex.join(a.cmd)}"
            + (f" for {a.duration} s" if a.duration else " (Ctrl-C stops)"))
-    command = T.with_board_state(remote, f"bash -c {q(outer)}")   # power mode, clocks, temperatures before and after
+    command = f"bash -c {q(outer)}"
+    ros_trace = a.ros_trace and not container
+    if a.ros_trace and container:
+        J.info("--ros-trace runs natively for now: processes in the runtime container don't reach LTTng; skipped")
+    if ros_trace:   # the session starts before the nodes, so their init events name topics, timers and nodes
+        command = T.with_ros_trace(remote, command, f"jxb-{local.name}")
+    command = T.with_board_state(remote, command)   # power mode, clocks, temperatures before and after
     if a.monitor:   # measurements wait for each other on a shared board
         command = T.locked(board, f"jxb launch --monitor {local.name}", command, a)
     started, t0 = T._now(), time.time()
@@ -154,12 +162,14 @@ def cmd_launch(p, a) -> None:
         stop = f"kill -INT -- -$(cat {q(remote + '/pgid')}) 2>/dev/null"
         if name:   # the pid in the file belongs to the container's PID namespace
             stop = f"docker exec {name} sh -c {q(stop)}"
-        board.ssh(f"{stop}; for i in $(seq 90); do [ -e {q(remote + '/.done')} ] && break; sleep 1; done; true",
+        wait_ros = (f"; for i in $(seq 120); do [ -e {q(remote + '/.ros2-done')} ] && break; sleep 1; done"
+                    if ros_trace else "")   # babeltrace converts the trace after the launch
+        board.ssh(f"{stop}; for i in $(seq 90); do [ -e {q(remote + '/.done')} ] && break; sleep 1; done{wait_ros}; true",
                   check=False)
         rc = 130
     T._save(board, p, a, "launch", local, remote, started, time.time() - t0, rc, mode=mode, target=list(a.cmd),
             helpers=[w for w in a.with_ if w.strip()], bag=a.bag, interval_ms=a.interval if a.monitor else None,
-            mem_guard_mb=a.mem_guard, rates=a.rates)
+            mem_guard_mb=a.mem_guard, rates=a.rates, ros_trace=ros_trace)
     # a launch ended by --duration or Ctrl-C (SIGINT) is a normal end
     sys.exit(0 if rc in (0, 124, 130, -2) else rc)
 
@@ -182,6 +192,8 @@ def register(sub, jxb) -> None:
     s.add_argument("--rates", nargs="+", metavar="TOPIC", help="message rates of these topics (light probe)")
     s.add_argument("--mem-guard", type=int, metavar="MB",
                    help="stop the launch when the board's MemAvailable falls below MB")
+    s.add_argument("--ros-trace", action="store_true",
+                   help="ROS 2 callbacks, publishes and takes with LTTng (no root; native mode)")
     s.add_argument("--label", help="suffix of the trace directory (default: the launch file's name)")
     s.add_argument("--keep", action="store_true", help="keep the recording on the board")
     s.add_argument("--no-lock", action="store_true", help="--monitor without the board's measurement lock")
