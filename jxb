@@ -55,7 +55,7 @@ import jxb_trace  # noqa: E402
 import jxb_vscode  # noqa: E402
 import jxb_launch  # noqa: E402
 
-VERSION = "1.1.0"   # CHANGELOG.md
+VERSION = "1.1.1"   # CHANGELOG.md
 DRY_RUN = False
 
 
@@ -314,14 +314,39 @@ class Board:
         self.host, self.user = cfg["host"], cfg.get("user", "nvidia")
         self.base = cfg.get("deploy_dir", f"/home/{self.user}/jxb/{p.name}")
         self.target = f"{self.user}@{self.host}"
+        # keepalives: a board that resets during a command (F85) fails the command within a minute instead of the
+        # connection hanging until TCP gives up
         self.ssh_opts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
-                         "-p", str(cfg.get("ssh_port", 22))]
+                         "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "-p", str(cfg.get("ssh_port", 22))]
+
+    def uptime(self) -> float | None:
+        """The board's uptime in seconds, or None if it doesn't answer."""
+        try:
+            res = subprocess.run(["ssh", *self.ssh_opts, self.target, "cut -d' ' -f1 /proc/uptime"],
+                                 capture_output=True, text=True, timeout=30)
+            return float(res.stdout.split()[0]) if res.returncode == 0 else None
+        except (subprocess.TimeoutExpired, ValueError, IndexError):
+            return None
+
+    def lost(self) -> str:
+        """What an ssh exit code of 255 means here: no key login, a board that doesn't answer, or one that rebooted
+        while the command ran (its uptime tells)."""
+        up = self.uptime()
+        if up is None:
+            return (f"ssh to {self.target} failed: no key login (once: ssh-copy-id {self.target}), or the board doesn't "
+                    "answer (network, power, or a reset in progress: it is back after ~2 minutes; jxb board check)")
+        if up < 900:
+            return (f"the SSH connection to {self.name} broke off, and the board has been up for only {up:.0f} s: it "
+                    "rebooted during the command, most likely a kernel crash (docs/findings.md F85). The recording's "
+                    "data on the board is lost; jxb board check shows the crash")
+        return (f"the SSH connection to {self.name} broke off (network?), or the command itself exited with 255; the "
+                "board is reachable")
 
     def ssh(self, command: str, tty: bool = False, check: bool = True, capture: bool = False) -> int | str:
         cmd = ["ssh", *self.ssh_opts, *(["-t"] if tty else []), self.target, command]
         res = sh(cmd, check=False, capture_output=capture, text=capture or None)
         if res.returncode == 255:
-            fail(f"ssh to {self.target} failed. Key login needed once: ssh-copy-id {self.target}")
+            fail(self.lost())
         if check and res.returncode != 0:
             fail(f"remote command failed ({res.returncode}) on {self.name}")
         return res.stdout if capture else res.returncode
@@ -356,6 +381,16 @@ def cmd_board(p: Profile, a) -> None:
                     capture=True)
     release, pkgs, extras = (out.split("---\n") + ["", ""])[:3]
     print(f"{board.name} ({board.target}): {release.strip()}")
+    # health: uptime, a crash before the last boot (pstore records keep the crash time and are listable without
+    # root), free memory, the measurement lock
+    health = str(board.ssh("cut -d' ' -f1 /proc/uptime; awk '/btime/ {print $2}' /proc/stat; "
+                           "ls -l --time-style=+%s /var/lib/systemd/pstore/ 2>/dev/null | awk '/dmesg-ramoops/ {print $6}' "
+                           "| sort -n | tail -1 | grep . || echo -; awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo; "
+                           "cat ~/jxb/.measure.lock.info 2>/dev/null || echo -", capture=True)).split("\n")
+    up, btime, crash, avail, holder = (health + ["-"] * 5)[:5]
+    print(f"  {jxb_trace.board_health(float(up), int(btime), None if crash == '-' else int(crash))}, "
+          f"{int(avail) / 1024:.1f} GB available, measurement lock "
+          + ("free" if holder.strip() in ("", "-") else f"held: {holder.strip()}"))
     ours = dict(l.split("=", 1) for l in lock.read_text().splitlines()) if lock.exists() else {}
     mism = 0
     for line in pkgs.split():

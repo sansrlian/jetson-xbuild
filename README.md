@@ -9,7 +9,7 @@ NVIDIA world. Roadmap and decisions: [PLAN.md](PLAN.md).
 
 **New here?** [docs/getting-started.md](docs/getting-started.md) covers the one-time setup, daily use and what to do
 when something goes wrong. **Analyzing boards?** [docs/analysis.md](docs/analysis.md) maps questions to recordings,
-explains the results and what keeps measurements on a shared board valid.
+explains the results and what keeps measurements on a shared board valid. **AI agents:** [AGENTS.md](AGENTS.md).
 How it works under the hood, with the design, measurements and lessons learned:
 [docs/system.md](docs/system.md) (typeset: [docs/latex/jxb.pdf](docs/latex/jxb.pdf)). The SAM stack's measured
 performance on the Orin Nano, with optimization hypotheses: [docs/latex/measurements.pdf](docs/latex/measurements.pdf).

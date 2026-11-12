@@ -1271,6 +1271,19 @@ def _mhz(v) -> str:
     return "?" if v is None else f"{v:g}"
 
 
+def board_health(uptime_s: float, btime: int, crash_record: int | None) -> str:
+    """Uptime and the last kernel crash, from /proc and the timestamps of the pstore records (both board clock):
+    systemd-pstore archives a crash's records at the next boot with the crash's time, about two minutes before it."""
+    d, rest = divmod(int(uptime_s), 86400)
+    up = f"up {d} d {rest // 3600} h" if d else f"up {rest // 3600} h {rest % 3600 // 60} min"
+    if crash_record is None:
+        return f"{up}, no kernel crash recorded"
+    if btime - 900 <= crash_record <= btime + 300:
+        return (f"{up}; the last boot followed a kernel crash ({btime - crash_record} s before it; pstore holds the "
+                "log, root-only; F85)")
+    return f"{up}; last kernel crash record {(btime - crash_record) / 86400:.1f} days before the last boot"
+
+
 def board_settings(st: dict) -> dict[str, str]:
     """The settings of a board state that someone can change (power mode, governors, clock limits, idle states,
     rail gating, fan control), for comparisons; not the current clocks or temperatures."""

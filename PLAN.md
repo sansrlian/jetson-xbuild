@@ -1,7 +1,7 @@
 # Plan: Orin cross-dev / deploy / trace ecosystem and JetsonPlanner
 
 Created 2026-11-02. Living document: tick boxes and add dates as work progresses.
-Supersedes the "Open TODOs" in `HANDOFF.md` (that file stays as history).
+Supersedes the "Open TODOs" in `attic/scaffold-2026-10-26/HANDOFF.md` (that file stays as history). Agents: AGENTS.md.
 
 **Goal:** a DevOps ecosystem for a fleet of Jetson Orins (Nano first, AGX too), inspired by the Renesas RZ/V2H RDK
 `xbuild` environment:
@@ -81,7 +81,7 @@ Design rules:
 ## 3. Workstreams
 
 ### W1. Reference analysis (Renesas + others)
-Renesas: mostly done (see HANDOFF). Still open: start the image, run one real cross-build in it, and record
+Renesas: mostly done (see attic/scaffold-2026-10-26/HANDOFF.md). Still open: start the image, run one real cross-build in it, and record
 what the RDK does well (one-command setup, baked sysroot, VS Code integration) and badly (sshpass, 14.5 GB
 image, single board).
 
@@ -291,7 +291,9 @@ Like the Renesas RDK's VS Code tasks/launch configs, but as `jxb` commands first
       libraries link liblttng-ust); callback durations per node and topic/timer, publish rates, take latency,
       callbacks in the timelines. Found the detector working on 0.32 s old frames (F83) (2026-11-10)
 - [ ] ROS 2 tracing in container mode (the runtime container needs the user's LTTng socket directory)
-- [ ] Read the pstore records of the second reset (F84, root) to confirm the reclaim bug of F79
+- [x] pstore after the resets: the second reset's records were overwritten by a third (2026-11-11), which shows the
+      same memory-cgroup fault as F79 from another path (F85); jxb now notices resets (SSH keepalives, uptime) and
+      `jxb board check` reports crashes (2026-11-12)
 - [x] Lyrical mode (a): 26.04 Lyrical container on JetPack, GPU through the board's CDI spec; CUDA/cuDNN/TensorRT
       come from the board via nvidia-container-toolkit (no CUDA 13.2/TensorRT for 26.04 sbsa, findings F23); hybrid
       sysroot (26.04 + Lyrical + r39.2 dev debs); deployment in a mounted volume. Verified on the Nano: test suite,

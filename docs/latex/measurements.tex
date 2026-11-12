@@ -459,7 +459,8 @@ reset: memory rising from 1.39 to 1.50\,GB as the model loads, CPU load up to 44
 later from pstore with root, explains it (\finding{79}): an Oops in \code{kswapd0}, during page reclaim, where freeing
 buffer heads charged to a memory cgroup dereferenced an invalid address (\code{obj_cgroup_uncharge} $\to$
 \code{refill_obj_stock}) on the PREEMPT\_RT kernel, followed by a kernel panic. It was a kernel bug; the CUDA EP's
-initialization in the container only supplied the memory pressure.
+initialization in the container only supplied the memory pressure. The same fault later reset the board outside
+reclaim too, from an RCU callback (\finding{85}).
 
 \textbf{Long nsys sessions.} In two Nsight Systems recordings, the session stayed open long after the workload had
 ended (508\,s and 3800\,s). Nsight Systems waits for every process of the profiled tree, including processes that

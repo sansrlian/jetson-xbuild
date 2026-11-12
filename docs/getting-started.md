@@ -187,6 +187,7 @@ More on every command: [workflows.md](workflows.md).
 | `... has no cuda-gdb` | the profile's image predates CUDA debugging: `jxb --profile <p> image build`, then `jxb up --recreate` |
 | `boards A, B need different gdb_port values` | give each board its own `gdb_port` in `boards.toml` to debug them together |
 | report says `fixed clocks` or `CHANGED during the recording` | someone ran `jetson_clocks` or changed the power mode; measure again before comparing |
+| `the SSH connection to <board> broke off, and the board has been up for only N s` | the board reset during the command (a known kernel bug, F85): repeat it; `jxb board check` shows the crash |
 | `no X display on this host` | `jxb gui` needs a desktop session on the PC (`DISPLAY`; on Wayland, XWayland provides one) |
 
 ## Read more

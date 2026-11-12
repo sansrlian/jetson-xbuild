@@ -21,8 +21,10 @@ workspace directory, with `jxb` on your PATH (or `./jxb` in the jxb repository).
 - **Don't let the probe become the load.** Subscribing to 1280x800 image topics costs a quarter of a core per
   subscriber (F70): measure rates on small companion topics (camera info, inference time) with `--rates`, not on
   the images.
-- **Keep memory pressure low.** The board's RT kernel crashed once in memory reclaim under pressure (F79). Use
-  `--mem-guard MB` for long runs; it stops the launch before memory runs out.
+- **Expect the odd reset.** The board's RT kernel has a bug in memory-cgroup accounting that resets it now and then:
+  three times in eight days, under load and without (F79, F85). Keep memory pressure low (`--mem-guard MB` for
+  long runs), keep recordings short enough to repeat, and run `jxb board check` first: it shows whether the last
+  boot followed a crash.
 
 ## Questions and the commands that answer them
 
@@ -107,7 +109,7 @@ and the detector's queue makes its detections a third of a second late.
 | `rate` lower than the publisher's | the probe can't keep up with large messages (F70) | probe a small companion topic |
 | tegrastats durations and energies 1.2-1.5 % off | its real interval is longer than `--interval` (F67) | from 30 s on, jxb fits the real interval from the samples' timestamps (`interval_real_ms`) and uses it for times and energy |
 | Timestamps in 1970 in board logs | the board runs without NTP (F35) | jxb maps them to the PC's clock (F77) |
-| Board reset during a run | a kernel bug in memory reclaim on the RT kernel (F79); it hit twice, once while the full stack started (F84) | keep memory pressure low (`--mem-guard`), start heavy stacks one at a time, tell the board's other users; the crash log is in pstore (root) |
+| Board reset during a run; jxb says the connection broke off and the board was up only seconds | a kernel bug in memory-cgroup accounting on the RT kernel (F79, F85) | repeat the recording; tell the board's other users; `jxb board check` shows the crash; before the next reset overwrites it, copy `/var/lib/systemd/pstore` (root) for a report to NVIDIA |
 | ROS callbacks named only by address | the processes started before the recording | start them inside it: `jxb launch --ros-trace` |
 | Kernel trace shorter than `--duration` | ring buffer overflow | `--buffer-mb` as the report suggests |
 | `fixed clocks` in the report | someone ran `jetson_clocks` | wait for the default clocks or compare only with runs at the same clocks |

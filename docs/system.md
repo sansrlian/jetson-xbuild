@@ -1288,7 +1288,7 @@ jxb therefore handles overflows explicitly:
   $\lceil 1.1\, b \cdot w / k \rceil$ MB per CPU for buffer $b$, $w$ events written and $k$ kept.
 
 `--buffer-mb` sets the buffer; by default it grows with `--duration`, from 8 to 32 MB per CPU. It stays bounded
-because the board is shared and its kernel has a bug in memory reclaim (F79).
+because the board is shared and its kernel has a bug in memory-cgroup accounting (F79, F85).
 
 ### 7.6 Inference benchmarks
 
@@ -1631,6 +1631,10 @@ every exit path (traps).
   with the container's library loading only supplying the memory pressure.
   *Lessons:* on shared hardware an unexplained fault is a policy decision, not only a bug; and pstore keeps the
   evidence across the reboot.
+  Two more resets followed. The third showed the same fault, reached from an RCU callback instead of reclaim
+  (F85): the per-CPU cgroup object stock holds a corrupted pointer, and any accounted free can hit it. The
+  practical consequences for jxb: SSH keepalives, a clear message when a board resets during a command, and
+  crash detection in `jxb board check`.
 - **Clock settings.** The board runs CPU and GPU with the `performance` governor, and another session may run
   `jetson_clocks`. Recordings therefore note the board's state and flag fixed or changed clocks (F73).
 - **Permissions as configuration.** GPU debugging needs group `debug` (F75, F81) and kernel tracing needs root. Both
@@ -1725,8 +1729,9 @@ Open issues of the current state:
   - Several boards were tried as two inventory names for that board (F78); parallel recordings on separate boards
     are untested.
   - AGX Orin and Thor (GPU variant `openrm`) are prepared in the profile format but untested.
-- **The RT kernel's reclaim bug** (F79) is NVIDIA's to fix. Until then, heavy memory pressure can reset the board;
-  it most likely hit again while the full stack started natively (F84).
+- **The RT kernel's memory-cgroup bug** (F79, F85) is NVIDIA's to fix. It reset the board three times in eight days,
+  under load and without; jxb notices a reset (the connection breaks off and the board's uptime is short) and
+  `jxb board check` shows whether the last boot followed a crash.
 - **Kernel traces of heavy loads** need large ring buffers, ~50 MB per CPU for 30 s of the full stack (F80). jxb
   reports the loss and the size needed, but doesn't stream the trace.
 - **The Basler Pylon SDK** needs its licence accepted; `pylon_camera_package` is the one SAM package not built.
@@ -1849,7 +1854,7 @@ within a release are ABI-compatible (F35). Major differences mean the board is n
 **A node finds the wrong ONNX Runtime.** jxb's GPU build comes first on `LD_LIBRARY_PATH` only through jxb's
 environment (`jxb run`, `jxb launch`, `jxb ssh`); a plain SSH shell sees the board's CPU-only `/opt/onnxruntime`.
 
-**Known issues.** The RT kernel can panic in memory reclaim under heavy memory pressure (F79; it reset the board during F56), so ONNX Runtime's CUDA EP stays off in container mode; `pylon_camera_package` needs the Basler SDK; `micro_ros_agent` fails on Kilted (vendored Fast DDS
+**Known issues.** The RT kernel panics now and then in memory-cgroup accounting (F79, F85; it reset the board during F56), so ONNX Runtime's CUDA EP stays off in container mode; `pylon_camera_package` needs the Basler SDK; `micro_ros_agent` fails on Kilted (vendored Fast DDS
 references `tinyxml2::tinyxml2`, F54). More in [getting-started.md](getting-started.md), Section 6.
 
 ## Appendix E: glossary

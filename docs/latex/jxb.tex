@@ -1580,7 +1580,7 @@ every CPU covers (from the last \code{CPU N buffer started} marker; \code{SchedS
 over), and reports the share of events it kept together with the buffer that would keep all of them,
 $\lceil 1.1\, b\, w / k \rceil$\,MB per CPU for buffer $b$, $w$ events written and $k$ kept. \code{--buffer-mb} sets the
 buffer; by default it grows with \code{--duration} from 8 to 32\,MB per CPU. It stays bounded because the board is
-shared and its kernel has a bug in memory reclaim (\finding{79}).
+shared and its kernel has a bug in memory-cgroup accounting (\finding{79}, \finding{85}).
 
 \subsection{Inference benchmarks}
 \code{jxb trace bench BOARD --models M.onnx ...} runs a matrix of backends on the board: ONNX Runtime with the CPU,
@@ -1991,6 +1991,10 @@ address (\code{obj_cgroup_uncharge} $\to$ \code{refill_obj_stock}) on the PREEMP
 container's library loading only supplied the memory pressure.
 \begin{lesson}\textbf{Lesson.} On shared hardware, an unexplained fault is a policy decision as much as a bug: exclude the
 configuration, document it, and keep the evidence. pstore keeps it across the reboot.\end{lesson}
+Two more resets followed; the third showed the same fault, reached from an RCU callback instead of reclaim
+(\finding{85}): the per-CPU cgroup object stock holds a corrupted pointer, and any accounted free can hit it.
+Consequences for \jxb{}: SSH keepalives, a clear message when a board resets during a command, and crash
+detection in \code{jxb board check}.
 Two more consequences of sharing: another session may run \code{jetson_clocks}, so recordings note the board's state and
 flag fixed or changed clocks (\finding{73}); and GPU debugging (group \code{debug}, \finding{75}, \finding{81}) and kernel
 tracing (root) are one-time decisions of the board's owners, which \jxb{} names instead of working around.
@@ -2093,8 +2097,9 @@ Open issues of the current state:
   \item \textbf{One board.} Only one Orin Nano was available. Several boards were tried as two inventory names for it
         (\finding{78}); parallel recordings on separate boards are untested. AGX Orin and Thor (GPU variant
         \code{openrm}) are prepared in the profile format but untested.
-  \item \textbf{The RT kernel's reclaim bug} (\finding{79}) is NVIDIA's to fix; until then, heavy memory pressure can
-        reset the board; it most likely hit again while the full stack started natively (\finding{84}).
+  \item \textbf{The RT kernel's memory-cgroup bug} (\finding{79}, \finding{85}) is NVIDIA's to fix. It reset the board
+        three times in eight days, under load and without; \jxb{} notices a reset and \code{jxb board check} shows
+        whether the last boot followed a crash.
   \item \textbf{Kernel traces of heavy loads} need large ring buffers, about 50\,MB per CPU for 30\,s of the full stack
         (\finding{80}); \jxb{} reports the loss and the size needed, but doesn't stream the trace.
   \item \textbf{The Basler Pylon SDK} needs its licence accepted; \code{pylon_camera_package} is the one SAM package not
@@ -2216,7 +2221,7 @@ was unreliable (P2). \jxb{} uses QEMU only for optional smoke tests.
 environment (\code{jxb run}, \code{jxb launch}, \code{jxb ssh}); a plain SSH shell sees the board's CPU-only
 \code{/opt/onnxruntime}.
 
-\paragraph{Known issues.} The RT kernel can panic in memory reclaim under heavy memory pressure (\finding{79}; it reset the board during \finding{56}), so ONNX Runtime's CUDA EP stays off in container mode; \code{pylon_camera_package} needs the Basler SDK; \code{micro_ros_agent} fails on
+\paragraph{Known issues.} The RT kernel panics now and then in memory-cgroup accounting (\finding{79}, \finding{85}; it reset the board during \finding{56}), so ONNX Runtime's CUDA EP stays off in container mode; \code{pylon_camera_package} needs the Basler SDK; \code{micro_ros_agent} fails on
 Kilted because its vendored Fast DDS references \code{tinyxml2::tinyxml2} (\finding{54}).
 
 \section{Glossary}\label{app:glossary}

@@ -23,7 +23,7 @@ writes only below `~/jxb/` on the board and installs nothing there.
 | analysis | `jxb trace report [BOARD\|DIR]`, `jxb trace list` | `jxb: trace report (latest)` |
 | plots, comparisons | `jxb trace plot [DIR ...]`, `jxb trace compare DIR ...` | `jxb: trace plot (latest)` |
 | Nsight GUI of the board | `jxb trace gui BOARD [--tool ncu]` | — |
-| versions board vs. sysroot | `jxb board check BOARD` | `jxb: board check` |
+| versions board vs. sysroot, uptime, last kernel crash, free memory, measurement lock | `jxb board check BOARD` | `jxb: board check` |
 
 How this maps to the Renesas RDK's VS Code setup:
 

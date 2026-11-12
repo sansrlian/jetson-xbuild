@@ -274,6 +274,14 @@ class BoardStateTest(unittest.TestCase):
             self.assertNotIn("changed", b)
             self.assertIn("no end state", "\n".join(jxb_trace.format_board_state(b)))
 
+    def test_health(self):
+        # the third reset of F85: record at 1875937, boot at 1876066 (board clock)
+        self.assertEqual(jxb_trace.board_health(94500, 1876066, 1875937),
+                         "up 1 d 2 h; the last boot followed a kernel crash (129 s before it; pstore holds the log, "
+                         "root-only; F85)")
+        self.assertEqual(jxb_trace.board_health(3000, 1876066, None), "up 0 h 50 min, no kernel crash recorded")
+        self.assertIn("8.0 days before the last boot", jxb_trace.board_health(3000, 1876066, 1876066 - 8 * 86400))
+
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
     def test_wrapper_keeps_exit_code(self):
         with tempfile.TemporaryDirectory() as d:

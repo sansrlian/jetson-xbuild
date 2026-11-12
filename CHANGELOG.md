@@ -2,6 +2,17 @@
 
 `jxb --version` prints the version and the commit; every recording's `meta.json` notes it (`jxb`).
 
+## 1.1.1 (2026-11-12)
+
+- A board that resets during a command no longer leaves jxb waiting: SSH keepalives fail the connection within about a
+  minute, and jxb reports whether the board rebooted (its uptime) instead of a login error.
+- `jxb board check` shows the uptime, whether the last boot followed a kernel crash (pstore record times, no root),
+  free memory and the measurement lock.
+- F85: a third board reset shows the same kernel fault as F79 from another code path: the RT kernel's memory-cgroup
+  accounting, not only memory reclaim. Docs updated accordingly.
+- `AGENTS.md` (with `CLAUDE.md` importing it): a short guide for AI coding agents: commands, repository map, the rules
+  for the shared board and the shared checkout, conventions, pitfalls. The outdated `HANDOFF.md` moved to `attic/`.
+
 ## 1.1.0 (2026-11-10)
 
 - **ROS 2 tracing** with LTTng, no root: `jxb launch --ros-trace` and `jxb trace ros`. The report gives per callback
