@@ -52,7 +52,7 @@ Pin: origin "ports.ubuntu.com"
 Pin-Priority: 700
 """
 package_sets = ["base-dev", "runtime-base", "jetpack-7.2.1-dev", "l4t-driver", "ros-dev"]
-extras = ["onnxruntime", "cvcuda", "acados"]
+extras = ["onnxruntime", "cvcuda", "acados", "pylon"]
 
 [container]
 # Board-absolute paths that packages hard-code (e.g. SAM's object_detection uses /opt/onnxruntime). The
@@ -63,6 +63,9 @@ board_paths = ["/opt/onnxruntime", "/opt/acados"]
 # Shipped with `jxb deploy` to <deploy_dir>/runtime/<path> and put first on LD_LIBRARY_PATH by `jxb run`:
 # jxb's ONNX Runtime GPU build (CUDA + TensorRT EP) and acados, without touching the board's /opt.
 runtime = ["/opt/onnxruntime", "/opt/acados"]
+# SDKs that a board installs itself outside the loader's path (no ld.so.conf entry): jxb puts them on
+# LD_LIBRARY_PATH before the libraries it ships. A board without them gets the sysroot's libraries shipped instead.
+board_lib_dirs = ["/opt/pylon/lib"]
 
 [keys]
 ubuntu = "/usr/share/keyrings/ubuntu-archive-keyring.gpg"
@@ -92,3 +95,11 @@ tarball = "file://{jxb_home}/.work/extras/dist/acados-0.5.2-aarch64-jp{jetpack}.
 dest = "/opt/acados"
 optional = true
 build = "jxb exec -- /opt/jxb/extras/acados/build.sh <repo>/.work/extras"
+
+[extras.pylon]
+# Basler's pylon SDK, for SAM's pylon_camera_package (find_package(Pylon), /opt/pylon like the SAM dev image).
+# Basler's licence: the user downloads pylon's Debian package for Linux ARM 64 bit (pylon 7.5 or newer) into
+# .work/extras/pylon/. Boards that run a Basler camera install the same package (docs/workflows.md).
+debs = ["file://{jxb_home}/.work/extras/pylon/pylon*.deb"]
+optional = true
+build = "download pylon for Linux ARM 64 bit (Debian package) from baslerweb.com into <repo>/.work/extras/pylon/"

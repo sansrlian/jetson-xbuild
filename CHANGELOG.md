@@ -2,6 +2,22 @@
 
 `jxb --version` prints the version and the commit; every recording's `meta.json` notes it (`jxb`).
 
+## Unreleased
+
+- **Basler cameras (pylon):** SAM's `pylon_camera_package` cross-builds. Basler's licence keeps jxb from
+  downloading pylon: the user puts its Debian package for Linux ARM 64 bit into `.work/extras/pylon/`, and the
+  optional sysroot extra `pylon` installs it (local `.deb` extras may now name files by pattern; jxb checks that they
+  are arm64 packages). Boards with a camera install the same package once as root; profiles list
+  `[deploy] board_lib_dirs` (`/opt/pylon/lib`), which jxb puts on `LD_LIBRARY_PATH` before the libraries it ships,
+  and a board without pylon gets the sysroot's copies instead of a failed deploy.
+- `jxb-fix-needed` maps sysroot paths in `RUNPATH`/`RPATH` to the board path: pylon's CMake config sets the install
+  RPATH to its own `lib/`, which became a path of the build host in the board binary.
+- The board environment no longer ends `LD_LIBRARY_PATH` with an empty entry (the current directory) when the
+  variable was empty.
+- F86: SAM's Basler daA1280-54uc on samx at 30 Hz through the whole pipeline (fisheye undistortion, detector at 5 Hz,
+  inference p50 29 ms). F87: the kernel crash of F79/F85 also hits the standard kernel: samx reset once two seconds
+  after the stack started; the same stack then ran without a crash.
+
 ## 1.1.1 (2026-11-12)
 
 - A board that resets during a command no longer leaves jxb waiting: SSH keepalives fail the connection within about a

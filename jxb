@@ -409,6 +409,12 @@ def runtime_paths(p: Profile) -> list[str]:
     return [r for r in p.data.get("deploy", {}).get("runtime", []) if (p.sysroot / r.lstrip("/")).is_dir()]
 
 
+def board_lib_dirs(p: Profile) -> list[str]:
+    """Library dirs of SDKs that boards install themselves outside the loader's path (profile [deploy]
+    board_lib_dirs), e.g. Basler's pylon in /opt/pylon/lib. Nothing of them is shipped to a board that has them."""
+    return p.data.get("deploy", {}).get("board_lib_dirs", [])
+
+
 def ship_ros(p: Profile, board: Board) -> None:
     """A ROS distro the board doesn't have (it keeps its stock JetPack, apt is not touched): the sysroot's
     /opt/ros/<distro> is relocatable and runs from <base>/runtime/opt/ros/<distro> on the same Ubuntu release.
@@ -560,8 +566,9 @@ def ensure_board_libs(p: Profile, board: Board, env: str, dirs: list[str]) -> No
     """Ship the sysroot's copy of every shared library the deployed files need but the board lacks (dependencies of
     a shipped ROS distro, of jxb's extras, ...) to <base>/runtime/syslibs, until ldd resolves everything."""
     stage = REPO / ".work/deploy" / p.name / board.name / "syslibs"
+    # board_lib_dirs too: a board without such an SDK (no camera) still runs the deployment's other nodes
     search = ["/usr/lib/aarch64-linux-gnu", "/lib/aarch64-linux-gnu", f"/opt/ros/{p.distro}/lib",
-              *runtime_paths(p)]
+              *runtime_paths(p), *board_lib_dirs(p)]
     for conf in sorted((p.sysroot / "etc/ld.so.conf.d").glob("*.conf")):
         search += [l.strip() for l in conf.read_text().splitlines() if l.startswith("/")]
     shipped: set[str] = set()
@@ -683,9 +690,13 @@ def board_ros_setup(p: Profile, board: Board) -> str:
 
 
 def board_runtime_libs(p: Profile, board: Board) -> str:
-    """Shell prefix that puts jxb's runtime extras and shipped system libraries on LD_LIBRARY_PATH."""
-    libs = [f"{board.base}/runtime{r}/lib" for r in runtime_paths(p)] + [f"{board.base}/runtime/syslibs"]
-    return f"export LD_LIBRARY_PATH={':'.join(libs)}:$LD_LIBRARY_PATH && "
+    """Shell prefix that puts jxb's runtime extras, the SDKs the board installs outside the loader's path
+    (board_lib_dirs) and the shipped system libraries on LD_LIBRARY_PATH. The SDKs come first: a board's own install
+    wins over copies shipped before it existed (pylon finds its camera drivers next to its own libraries). No empty
+    entry: that would be the current directory."""
+    libs = ([f"{board.base}/runtime{r}/lib" for r in runtime_paths(p)] + board_lib_dirs(p)
+            + [f"{board.base}/runtime/syslibs"])
+    return f"export LD_LIBRARY_PATH={':'.join(libs)}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}} && "
 
 
 def board_launch_args(board: "Board", ws: Path, args: list[str]) -> list[str]:

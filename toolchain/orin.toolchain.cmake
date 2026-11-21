@@ -50,12 +50,12 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
 # Let the linker resolve transitive dependencies of sysroot libraries: the board's ld.so.conf.d entries plus the
-# directories that are only on the board's LD_LIBRARY_PATH (ROS, ONNX Runtime).
+# directories that are only on the board's LD_LIBRARY_PATH (ROS, ONNX Runtime, Basler pylon).
 set(_jxb_libdirs
   /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu
   /opt/ros/$ENV{ROS_DISTRO}/lib /opt/ros/$ENV{ROS_DISTRO}/lib/aarch64-linux-gnu
   /usr/local/cuda-$ENV{JXB_CUDA_VERSION}/targets/$ENV{JXB_CUDA_TARGET}/lib
-  /opt/onnxruntime/lib /opt/acados/lib)
+  /opt/onnxruntime/lib /opt/acados/lib /opt/pylon/lib)
 file(GLOB _jxb_ldconf "${JXB_SYSROOT}/etc/ld.so.conf.d/*.conf")
 foreach(_jxb_conf IN LISTS _jxb_ldconf)
   file(STRINGS "${_jxb_conf}" _jxb_lines REGEX "^/")

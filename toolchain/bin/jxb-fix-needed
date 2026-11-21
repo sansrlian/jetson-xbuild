@@ -1,25 +1,32 @@
 #!/usr/bin/env python3
-"""Rewrite absolute DT_NEEDED entries of cross-built ELF files to the library's file name.
+"""Rewrite the build host's paths that cross-built ELF files record to what the board resolves.
 
-A shared library without DT_SONAME (common for ROS 2 libraries, e.g. Isaac ROS nodes and typesupport libraries
-exported as plain paths) that is linked by its full path is recorded with that path: <sysroot>/opt/ros/... on the
-build host, which doesn't exist on the board. The file name is a suffix of the same string in .dynstr, so only the
-entry's string offset changes; version-needs entries (vn_file) naming the same library are rewritten likewise,
-since the loader matches them against the name it loaded the library by.
+DT_NEEDED: a shared library without DT_SONAME (common for ROS 2 libraries, e.g. Isaac ROS nodes and typesupport
+libraries exported as plain paths) that is linked by its full path is recorded with that path: <sysroot>/opt/ros/...
+on the build host, which doesn't exist on the board. The file name is a suffix of the same string in .dynstr, so
+only the entry's string offset changes; version-needs entries (vn_file) naming the same library are rewritten
+likewise, since the loader matches them against the name it loaded the library by.
 
-  jxb-fix-needed PATH...      (ELF files or directories; prints each rewritten entry)
+RUNPATH/RPATH (with --sysroot): a package's CMake config may add its own library directory to the install RPATH
+(Basler's pylon does, so that applications find it without LD_LIBRARY_PATH). Found in the sysroot, that is
+<sysroot>/opt/pylon/lib; on the board it is the same path without the sysroot. A single entry is again a suffix of
+its string; several entries are rewritten with patchelf.
+
+  jxb-fix-needed [--sysroot DIR] PATH...      (ELF files or directories; prints each rewritten entry)
 """
 from __future__ import annotations
 
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
 PT_LOAD, PT_DYNAMIC = 1, 2
-DT_NULL, DT_NEEDED, DT_STRTAB, DT_VERNEED, DT_VERNEEDNUM = 0, 1, 5, 0x6FFFFFFE, 0x6FFFFFFF
+DT_NULL, DT_NEEDED, DT_STRTAB, DT_RPATH, DT_RUNPATH = 0, 1, 5, 15, 29
+DT_VERNEED, DT_VERNEEDNUM = 0x6FFFFFFE, 0x6FFFFFFF
 
 
-def fix(path: Path) -> list[str]:
+def fix(path: Path, sysroot: str = "") -> list[tuple[str, str]]:
     data = bytearray(path.read_bytes())
     if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:   # 64-bit little-endian only (aarch64)
         return []
@@ -51,17 +58,34 @@ def fix(path: Path) -> list[str]:
     if DT_STRTAB not in tags:
         return []
     strtab = file_offset(tags[DT_STRTAB])
-    changed = []
+    changed: list[tuple[str, str]] = []
+    patchelf: list[tuple[int, str]] = []
+
+    def string(offset: int) -> str:
+        return data[strtab + offset:data.index(0, strtab + offset)].decode()
 
     def rewrite(at: int, fmt: str, offset: int) -> None:
-        name = data[strtab + offset:data.index(0, strtab + offset)].decode()
+        name = string(offset)
         if name.startswith("/"):
             struct.pack_into(fmt, data, at, offset + name.rindex("/") + 1)
-            changed.append(name)
+            changed.append((name, name.rsplit("/", 1)[1]))
+
+    def board_path(entry: str) -> str:
+        return entry[len(sysroot):] if entry.startswith(sysroot + "/") else entry
 
     for at, tag, val in entries:
         if tag == DT_NEEDED:
             rewrite(at + 8, "<Q", val)
+        elif tag in (DT_RPATH, DT_RUNPATH) and sysroot:
+            value = string(val)
+            new = ":".join(board_path(e) for e in value.split(":"))
+            if new == value:
+                continue
+            if ":" in value:
+                patchelf.append((tag, new))
+            else:
+                struct.pack_into("<Q", data, at + 8, val + len(sysroot))
+            changed.append((value, new))
     if DT_VERNEED in tags:
         at = file_offset(tags[DT_VERNEED])
         for _ in range(tags.get(DT_VERNEEDNUM, 0)):
@@ -72,17 +96,25 @@ def fix(path: Path) -> list[str]:
             at += vn_next
     if changed:
         path.write_bytes(data)
+    for tag, new in patchelf:
+        # --force-rpath keeps a DT_RPATH one: RPATH is searched before LD_LIBRARY_PATH, RUNPATH after it
+        subprocess.run(["patchelf", *(["--force-rpath"] if tag == DT_RPATH else []), "--set-rpath", new, str(path)],
+                       check=True)
     return changed
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
+    args = sys.argv[1:]
+    sysroot = ""
+    if args[:1] == ["--sysroot"] and len(args) > 1:
+        sysroot, args = args[1].rstrip("/"), args[2:]
+    if not args:
         sys.exit(__doc__)
-    for root in map(Path, sys.argv[1:]):
+    for root in map(Path, args):
         for p in ([root] if root.is_file() else sorted(root.rglob("*"))):
             if p.is_file() and not p.is_symlink():
-                for name in dict.fromkeys(fix(p)):
-                    print(f"jxb-fix-needed: {p}: {name} -> {name.rsplit('/', 1)[1]}")
+                for old, new in dict.fromkeys(fix(p, sysroot)):
+                    print(f"jxb-fix-needed: {p}: {old} -> {new}")
     return 0
 
 

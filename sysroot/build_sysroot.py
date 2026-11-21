@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import datetime as dt
+import glob
 import hashlib
 import json
 import os
@@ -301,6 +302,26 @@ def relativize_symlinks(root: Path) -> int:
     return count
 
 
+def extra_debs(name: str, cfg: dict, fmt: dict) -> list[str] | None:
+    """The .deb URLs of an extra. A file:// name may be a glob pattern: packages that the user downloads under the
+    vendor's licence (Basler's pylon) keep the vendor's file name. None: such a package is missing and the extra is
+    optional."""
+    urls = []
+    for url in cfg["debs"]:
+        url = url.format(**fmt)
+        if not url.startswith("file://"):
+            urls.append(url)
+            continue
+        found = sorted(glob.glob(url[7:]))
+        if not found:
+            if cfg.get("optional"):
+                log(f"extra '{name}' skipped: no {url[7:]} ({cfg.get('build', '')})")
+                return None
+            die(f"extra '{name}': {url[7:]} missing")
+        urls += [f"file://{f}" for f in found]
+    return urls
+
+
 def install_extras(root: Path, profile: dict, cache: Path, scripts: Path) -> tuple[dict, list[str]]:
     """Non-apt artifacts: release tarballs (onnxruntime) and .debs by URL (e.g. CV-CUDA)."""
     info, controls = {}, []
@@ -331,10 +352,17 @@ def install_extras(root: Path, profile: dict, cache: Path, scripts: Path) -> tup
                 t.extractall(dest, members=members, filter="tar")
             info[name] = {"url": url, "sha256": sha256(tgz), "dest": cfg["dest"].format(**fmt)}
         elif "debs" in cfg:
+            urls = extra_debs(name, cfg, fmt)
+            if urls is None:
+                continue
             info[name] = []
-            for url in cfg["debs"]:
-                url = url.format(**cfg)
-                deb = download(url, cache / "extras" / Path(url).name)
+            for url in urls:
+                deb = Path(url[7:]) if url.startswith("file://") else download(url, cache / "extras" / Path(url).name)
+                arch = subprocess.run(["dpkg-deb", "-f", str(deb), "Architecture"], capture_output=True,
+                                      text=True).stdout.strip()
+                if arch not in ("arm64", "all"):
+                    die(f"extra '{name}': {deb.name} is a package for {arch or 'an unknown architecture'}; "
+                        "the sysroot needs arm64")
                 controls.append(extract_deb(deb, root, scripts))
                 info[name].append({"url": url, "sha256": sha256(deb)})
         elif name == "onnxruntime":

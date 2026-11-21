@@ -202,7 +202,9 @@ Implementation notes and every pitfall found on the way: [docs/findings.md](docs
       sysroots; needed a CUDA 13.2 CCCL fixup (findings F22) (2026-11-02)
 - [x] acados 0.5.2 cross build + host-side code generation; `acados_model_package` and `trajectory_planner_package`
       cross-build (2026-11-02)
-- [ ] Pylon SDK (Basler) as extra for `pylon_camera_package`
+- [x] Pylon SDK (Basler) as extra for `pylon_camera_package`: the user's download (Basler's licence) in
+      `.work/extras/pylon/`, optional sysroot extra, `[deploy] board_lib_dirs`, RUNPATH mapped to the board; the
+      daA1280-54uc on samx at 30 Hz (F86) (2026-11-21)
 - [x] `jxb-elfcheck` also checks GLIBC_/GLIBCXX_ symbol versions against the sysroot (2026-11-02)
 - [x] Isaac ROS 5.0 (Lyrical) via `isaac-ros/release-5.0 noble-jetpack` + NVIDIA's Lyrical Buildfarm for noble:
       profile `jp721-lyrical-isaac`, test package with Isaac ROS TensorRT + `rosidl::Buffer` CUDA backend (F30-F32)

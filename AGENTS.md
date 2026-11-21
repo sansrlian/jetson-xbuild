@@ -10,7 +10,7 @@ ROS 2 / CUDA / TensorRT software for NVIDIA Jetson Orin on an x86_64 PC, deploys
 measures it on the boards. Boards stay on stock JetPack 7.2.1; jxb writes only to `~/jxb/` on them.
 
 - Version: `./jxb --version`; changes: [CHANGELOG.md](CHANGELOG.md).
-- Open work: [PLAN.md](PLAN.md); what was learned and measured: [docs/findings.md](docs/findings.md) (F1-F85).
+- Open work: [PLAN.md](PLAN.md); what was learned and measured: [docs/findings.md](docs/findings.md) (F1-F87).
 
 ## Map
 
@@ -40,8 +40,9 @@ python3 -m unittest discover -s tests/trace     # unit tests, seconds, no board
 ```
 
 - Heavy and slow (minutes, 3-20 GB): `./jxb --profile P image build`, `sysroot build`, `up`, `build`, `test`.
-- CI (`.github/workflows/ci.yml`) runs each step with `bash -e`. Reproduce a step the same way; inside `( ... ) || ...`
-  `-e` is off, which once hid a failure.
+- CI (`.github/workflows/ci.yml`) runs each step with `bash -e`. Reproduce a step the same way, in a copy of the
+  repository (`git ls-files -z | rsync -a --from0 --files-from=- ./ COPY/`): the CLI step overwrites `boards.toml`
+  and steps write file lists. Inside `( ... ) || ...` `-e` is off, which once hid a failure.
 - After editing `docs/latex/*.tex`, rebuild the PDF and commit it:
   `docker run --rm --user $(id -u):$(id -g) -v "$PWD/docs":/doc -w /doc/latex jxb-tex:local latexmk -pdf jxb.tex`
   (and `measurements.tex`).
@@ -60,7 +61,8 @@ python3 -m unittest discover -s tests/trace     # unit tests, seconds, no board
 - Root through the docker group (`--root docker`, a privileged container) needs its own explicit approval.
 - Never enter passwords; SSH works with keys only.
 
-**The board's RT kernel crashes now and then** (F79, F85: three resets in eight days).
+**The boards' kernel crashes now and then** (F79, F85, F87: memory-cgroup accounting in L4T 39.2.1's 6.8 kernel,
+RT and standard; nano-lab three resets in eight days, samx once right after a stack start).
 - Start heavy stacks one at a time.
 - When a connection is lost, run `jxb board check`.
 - Tell the user about every reset that happened during your work: other people use the board.
@@ -102,4 +104,5 @@ python3 -m unittest discover -s tests/trace     # unit tests, seconds, no board
 | ROS callbacks shown only as addresses | the nodes started before the trace; use `jxb launch --ros-trace` (F83) |
 | `ros2 launch` in a background job ignores Ctrl-C | SIGINT is inherited as ignored; jxb resets it before exec (F69) |
 | A rate probe reports less than the publisher sends | large messages cost the probe their transport; probe a small companion topic (F70) |
+| `pylon_camera_package`: `Pylon_DIR-NOTFOUND` | Basler's pylon isn't in the sysroot: its arm64 `.deb` goes into `.work/extras/pylon/` (the user downloads it: licence), then `jxb sysroot build`; a board with the camera installs pylon as root once (F86) |
 | `(eval):1: no matches found` in an agent shell | the agent's shell treats unmatched globs as errors; use `find` or quote |
