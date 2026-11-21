@@ -35,6 +35,8 @@ Local config (gitignored): jxb.toml (defaults), boards.toml (inventory, see boar
 from __future__ import annotations
 
 import argparse
+import atexit
+import hashlib
 import json
 import os
 import re
@@ -302,6 +304,31 @@ def cmd_test(p: Profile, a) -> None:
 
 
 # --------------------------------------------------------------------------------------------- boards
+_MUX: dict[str, str] = {}   # control socket -> SSH target of this process's master connections
+
+
+def mux_path(target: str, port: str) -> str:
+    """The control socket of this process's master connection to a board (see Board), in a private directory. Short
+    enough for a socket path; the masters are closed when jxb exits."""
+    run = os.environ.get("XDG_RUNTIME_DIR")
+    d = Path(run) / "jxb-ssh" if run else Path.home() / ".cache/jxb/ssh"
+    d.mkdir(parents=True, exist_ok=True)
+    d.chmod(0o700)
+    path = str(d / f"{os.getpid()}-{hashlib.sha1(f'{target}:{port}'.encode()).hexdigest()[:12]}")
+    if not _MUX:
+        atexit.register(close_mux)
+    _MUX[path] = target
+    return path
+
+
+def close_mux() -> None:
+    for path, target in _MUX.items():
+        if os.path.exists(path):
+            subprocess.run(["ssh", "-o", f"ControlPath={path}", "-O", "exit", target], capture_output=True)
+        # a master that died (its connection broke) leaves its socket behind
+        Path(path).unlink(missing_ok=True)
+
+
 class Board:
     def __init__(self, name: str, p: Profile):
         inv = load_toml(REPO / "boards.toml")
@@ -316,13 +343,23 @@ class Board:
         self.target = f"{self.user}@{self.host}"
         # keepalives: a board that resets during a command (F85) fails the command within a minute instead of the
         # connection hanging until TCP gives up
-        self.ssh_opts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
-                         "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "-p", str(cfg.get("ssh_port", 22))]
+        port = str(cfg.get("ssh_port", 22))
+        base = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
+                "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "-p", port]
+        # One connection per board and jxb process, shared by all its commands and rsyncs (F88): every login is a
+        # handshake and, on the board, a logind session with its own cgroup, created and removed again (15 for a
+        # deploy). Not shared between processes: sshd allows 10 sessions per connection, and a master ends with
+        # its process.
+        self.ssh_opts = [*base, "-o", "ControlMaster=auto", "-o", f"ControlPath={mux_path(self.target, port)}",
+                         "-o", "ControlPersist=60"]
+        # Port and X11 forwarding (debug, gui) and the reset check connect directly: a master keeps a client's
+        # forwardings after the client ends, and the check must not wait on a master whose board is gone.
+        self.direct_opts = [*base, "-o", "ControlMaster=no", "-o", "ControlPath=none"]
 
     def uptime(self) -> float | None:
         """The board's uptime in seconds, or None if it doesn't answer."""
         try:
-            res = subprocess.run(["ssh", *self.ssh_opts, self.target, "cut -d' ' -f1 /proc/uptime"],
+            res = subprocess.run(["ssh", *self.direct_opts, self.target, "cut -d' ' -f1 /proc/uptime"],
                                  capture_output=True, text=True, timeout=30)
             return float(res.stdout.split()[0]) if res.returncode == 0 else None
         except (subprocess.TimeoutExpired, ValueError, IndexError):
@@ -791,7 +828,7 @@ def cmd_debug(p: Profile, a) -> None:
         server = shlex.join(["exec", *gdbserver, remote, *a.cmd])
     # -tt: with a terminal on the board, closing the connection hangs up everything it started (gdbserver, and with
     # --launch the other nodes of the launch file), so nothing keeps running after the debug session.
-    ssh = ["ssh", *board.ssh_opts, "-tt", "-o", "ExitOnForwardFailure=yes", "-L", f"{port}:127.0.0.1:{port}",
+    ssh = ["ssh", *board.direct_opts, "-tt", "-o", "ExitOnForwardFailure=yes", "-L", f"{port}:127.0.0.1:{port}",
            board.target, board_exec(p, board, board_env_script(p, board, ws) + server, tty=True)]
     if a.server_only:   # VS Code's preLaunchTask: gdbserver and the tunnel in the foreground, cppdbg is the client
         info(f"gdbserver for {a.exe} on {board.name}, forwarded to 127.0.0.1:{port}")
@@ -871,7 +908,7 @@ def cmd_gui(p: Profile, a) -> None:
     else:
         remote = board_exec(p, board, script)
     info(f"{a.cmd[0]} on {board.name}, displayed here")
-    sys.exit(sh(["ssh", *board.ssh_opts, "-Y", board.target, remote], check=False).returncode)
+    sys.exit(sh(["ssh", *board.direct_opts, "-Y", board.target, remote], check=False).returncode)
 
 
 def cmd_ssh(p: Profile, a) -> None:

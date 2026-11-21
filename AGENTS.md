@@ -10,7 +10,7 @@ ROS 2 / CUDA / TensorRT software for NVIDIA Jetson Orin on an x86_64 PC, deploys
 measures it on the boards. Boards stay on stock JetPack 7.2.1; jxb writes only to `~/jxb/` on them.
 
 - Version: `./jxb --version`; changes: [CHANGELOG.md](CHANGELOG.md).
-- Open work: [PLAN.md](PLAN.md); what was learned and measured: [docs/findings.md](docs/findings.md) (F1-F87).
+- Open work: [PLAN.md](PLAN.md); what was learned and measured: [docs/findings.md](docs/findings.md) (F1-F88).
 
 ## Map
 

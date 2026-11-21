@@ -17,6 +17,10 @@
 - F86: SAM's Basler daA1280-54uc on samx at 30 Hz through the whole pipeline (fisheye undistortion, detector at 5 Hz,
   inference p50 29 ms). F87: the kernel crash of F79/F85 also hits the standard kernel: samx reset once two seconds
   after the stack started; the same stack then ran without a crash.
+- **One SSH connection per board** for all steps of a jxb command (F88): before, every remote command and rsync was a
+  new login, which on the board is a new logind session and cgroup. A deploy now logs in once instead of 15 times and
+  takes 4.5 s instead of 8.7 s; a recorded launch once instead of 7 times. `jxb debug` and `jxb gui` still connect
+  separately (port and X11 forwarding).
 
 ## 1.1.1 (2026-11-12)
 
